@@ -247,7 +247,15 @@ function M.run_test(opts)
     display_target = "Until '" .. opts.until_target .. "'"
   end
 
-  vim.notify(string.format("Running Gherkio %s...", display_target), vim.log.levels.INFO)
+  local win_cfg = config.get("results_window") or {}
+  local show_notifications = win_cfg.show_notifications
+  if show_notifications == nil then
+    show_notifications = (win_cfg.layout == "float")
+  end
+
+  if show_notifications then
+    vim.notify(string.format("Running Gherkio %s...", display_target), vim.log.levels.INFO)
+  end
 
   local output = {}
   M.active_job = run_command_async(cmd, function(obj)
@@ -335,13 +343,22 @@ function M.process_run_results(bufnr, filepath, passed, output)
     M.show_results_float(output)
   end
 
+  local show_notifications = win_cfg.show_notifications
+  if show_notifications == nil then
+    show_notifications = (win_cfg.layout == "float")
+  end
+
   if passed then
-    vim.notify("✓ Gherkio execution passed!", vim.log.levels.INFO)
+    if show_notifications then
+      vim.notify("✓ Gherkio execution passed!", vim.log.levels.INFO)
+    end
     if config.get("quickfix").auto_close then
       vim.cmd("cclose")
     end
   else
-    vim.notify("✗ Gherkio execution failed! Check quickfix list.", vim.log.levels.ERROR)
+    if show_notifications then
+      vim.notify("✗ Gherkio execution failed! Check quickfix list.", vim.log.levels.ERROR)
+    end
     if config.get("quickfix").auto_open and #qf_entries > 0 then
       vim.cmd("copen")
     end
