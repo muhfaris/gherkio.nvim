@@ -1,0 +1,39 @@
+local M = {}
+
+M.defaults = {
+  keys = {
+    open_modal = "<leader>g",
+    copy_curl  = "<leader>gc",
+    paste_dsl  = "<leader>gp",
+  },
+  picker = "vim.ui.select",
+  quickfix = {
+    auto_open = true,
+    auto_close = true,
+  },
+  preview = {
+    width = 0.6,
+    height = 0.4,
+    border = "rounded",
+    auto_close = true,
+  },
+  default_env = "",
+  default_account = "",
+  verbose = false,
+}
+
+M.options = {}
+
+function M.setup(opts)
+  M.options = vim.tbl_deep_extend("force", M.defaults, opts or {})
+end
+
+-- Retrieve option safely
+function M.get(key, fallback)
+  if M.options[key] ~= nil then
+    return M.options[key]
+  end
+  return M.defaults[key] or fallback
+end
+
+return M
