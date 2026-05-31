@@ -80,9 +80,17 @@ require("gherkio").setup({
     auto_close = true,  -- Close the preview window using `q`, `Esc`, or `Enter`
   },
 
+  -- Floating window results options for test runs
+  results_window = {
+    auto_open = true,   -- Automatically show the test output logs in a floating window
+    width = 0.8,        -- Window width as a ratio of editor columns
+    height = 0.6,       -- Window height as a ratio of editor lines
+    border = "rounded", -- Border style
+  },
+
   -- Custom mappings registered inside Gherkio test buffers
   keys = {
-    open_modal = "<leader>go", -- Opens the cascading interactive selector menu
+    open_modal = "<leader>g",  -- Opens the cascading interactive selector menu
     copy_curl  = "<leader>gc", -- Converts current step under cursor to cURL
     paste_dsl  = "<leader>gp", -- Parses clipboard cURL into Gherkio DSL
   }

@@ -290,6 +290,11 @@ function M.process_run_results(bufnr, filepath, passed, output)
   vim.fn.setqflist(qf_entries, "r")
   vim.fn.setqflist({}, "a", { title = "Gherkio Run Failures" })
 
+  local win_cfg = config.get("results_window") or { auto_open = true }
+  if win_cfg.auto_open then
+    M.show_results_float(output)
+  end
+
   if passed then
     vim.notify("✓ Gherkio execution passed!", vim.log.levels.INFO)
     if config.get("quickfix").auto_close then
@@ -301,6 +306,70 @@ function M.process_run_results(bufnr, filepath, passed, output)
       vim.cmd("copen")
     end
   end
+end
+
+-- Open a beautiful floating window showing Gherkio test execution output
+function M.show_results_float(output_lines)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_option(bufnr, "buftype", "nofile")
+  vim.api.nvim_buf_set_option(bufnr, "bufhidden", "wipe")
+  vim.api.nvim_buf_set_option(bufnr, "swapfile", false)
+  vim.api.nvim_buf_set_option(bufnr, "filetype", "gherkio-results")
+
+  -- Clean ANSI escape codes from output lines
+  local cleaned_lines = {}
+  for _, line in ipairs(output_lines) do
+    local clean = line:gsub("\27%[[%d;]*%a", "") -- Strip ANSI escape codes
+    table.insert(cleaned_lines, clean)
+  end
+
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, cleaned_lines)
+
+  local win_cfg = config.get("results_window") or {
+    auto_open = true,
+    width = 0.8,
+    height = 0.6,
+    border = "rounded",
+  }
+
+  local total_cols = vim.o.columns
+  local total_lines = vim.o.lines
+  local width = math.floor(total_cols * (win_cfg.width or 0.8))
+  local height = math.floor(total_lines * (win_cfg.height or 0.6))
+
+  if width < 30 then width = 30 end
+  if height < 5 then height = 5 end
+
+  local row = math.floor((total_lines - height) / 2)
+  local col = math.floor((total_cols - width) / 2)
+
+  local opts = {
+    relative = "editor",
+    row = row,
+    col = col,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = win_cfg.border or "rounded",
+    title = " Gherkio Test Run Output ",
+    title_pos = "center",
+  }
+
+  local win = vim.api.nvim_open_win(bufnr, true, opts)
+
+  -- Make window read-only
+  vim.api.nvim_buf_set_option(bufnr, "modifiable", false)
+  vim.api.nvim_buf_set_option(bufnr, "readonly", true)
+
+  -- Map q, Esc, CR to close the window
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+  vim.keymap.set("n", "q", close, { buffer = bufnr, silent = true, nowait = true })
+  vim.keymap.set("n", "<Esc>", close, { buffer = bufnr, silent = true, nowait = true })
+  vim.keymap.set("n", "<CR>", close, { buffer = bufnr, silent = true, nowait = true })
 end
 
 -- Convert step to cURL command

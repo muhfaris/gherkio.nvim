@@ -17,6 +17,12 @@ M.defaults = {
     border = "rounded",
     auto_close = true,
   },
+  results_window = {
+    auto_open = true,
+    width = 0.8,
+    height = 0.6,
+    border = "rounded",
+  },
   default_env = "",
   default_account = "",
   verbose = false,
