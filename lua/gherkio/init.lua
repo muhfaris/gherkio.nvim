@@ -65,20 +65,102 @@ M.open_modal = function()
   require("gherkio.core.picker").open_modal()
 end
 
+M.run_last = function()
+  require("gherkio.core.runner").run_last()
+end
+
+local initialized_roots = {}
+
+local function setup_lsp_schema(project_root)
+  if initialized_roots[project_root] then
+    return
+  end
+  initialized_roots[project_root] = true
+
+  local cache_dir = vim.fn.stdpath("cache") .. "/gherkio"
+  if vim.fn.isdirectory(cache_dir) == 0 then
+    vim.fn.mkdir(cache_dir, "p")
+  end
+  local schema_path = cache_dir .. "/test.schema.json"
+
+  local function register_with_client(client)
+    if client.name ~= "yamlls" then return end
+
+    local settings = client.config.settings or {}
+    settings.yaml = settings.yaml or {}
+    settings.yaml.schemas = settings.yaml.schemas or {}
+
+    -- Normalize paths for Unix/Windows compatibility
+    local schema_path_normalized = schema_path:gsub("\\", "/")
+    local glob = (project_root .. "/.gherkio/tests/**/*.yaml"):gsub("\\", "/")
+
+    -- Only notify if configuration actually changed
+    if settings.yaml.schemas[schema_path_normalized] ~= glob then
+      settings.yaml.schemas[schema_path_normalized] = glob
+      client.config.settings = settings
+      client.notify("workspace/didChangeConfiguration", { settings = settings })
+    end
+  end
+
+  -- Query `gherkio` executable path from system
+  if vim.fn.executable("gherkio") == 1 then
+    vim.system({ "gherkio", "schema", "--type", "test" }, { text = true }, function(obj)
+      if obj.code == 0 and obj.stdout and #obj.stdout > 0 then
+        local f = io.open(schema_path, "w")
+        if f then
+          f:write(obj.stdout)
+          f:close()
+        end
+        -- Trigger update for already active yamlls instances
+        vim.schedule(function()
+          local active_clients = {}
+          if vim.lsp.get_clients then
+            active_clients = vim.lsp.get_clients({ name = "yamlls" })
+          else
+            active_clients = vim.lsp.get_active_clients()
+          end
+          for _, client in ipairs(active_clients) do
+            register_with_client(client)
+          end
+        end)
+      end
+    end)
+  end
+
+  -- Listen for future LspAttach events for yamlls
+  local group = vim.api.nvim_create_augroup("GherkioLspSchema", { clear = false })
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = group,
+    callback = function(args)
+      local client = vim.lsp.get_client_by_id(args.data.client_id)
+      if client and client.name == "yamlls" then
+        register_with_client(client)
+      end
+    end,
+  })
+end
+
 -- Primary plugin initialization
 function M.setup(opts)
   config.setup(opts)
 
   -- Setup buffer-local keymaps automatically for YAML files within Gherkio projects
   local keys = config.get("keys")
-  if keys then
-    local function bind_keys(bufnr)
-      local name = vim.api.nvim_buf_get_name(bufnr)
-      if name == "" then return end
+  
+  local function bind_keys(bufnr)
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if name == "" then return end
 
-      local runner = require("gherkio.core.runner")
-      local project_root = runner.find_project_root(bufnr)
-      if project_root then
+    local runner = require("gherkio.core.runner")
+    local project_root = runner.find_project_root(bufnr)
+    if project_root then
+      -- Automatically set up JSON Schema validation if enabled
+      local lsp_cfg = config.get("lsp_schema")
+      if lsp_cfg and lsp_cfg.enabled then
+        setup_lsp_schema(project_root)
+      end
+
+      if keys then
         if keys.open_modal and keys.open_modal ~= "" then
           vim.keymap.set("n", keys.open_modal, M.open_modal, { buffer = bufnr, silent = true, desc = "Gherkio Modal Options" })
         end
@@ -91,26 +173,29 @@ function M.setup(opts)
         if keys.preview_request and keys.preview_request ~= "" then
           vim.keymap.set("n", keys.preview_request, M.preview_request, { buffer = bufnr, silent = true, desc = "Gherkio Preview Step cURL" })
         end
+        if keys.repeat_last and keys.repeat_last ~= "" then
+          vim.keymap.set("n", keys.repeat_last, M.run_last, { buffer = bufnr, silent = true, desc = "Gherkio Repeat Last Run" })
+        end
       end
     end
-
-    -- Bind to current active buffer on startup/lazy-load if it's already a YAML file
-    local current_buf = vim.api.nvim_get_current_buf()
-    local ft = vim.bo[current_buf].filetype
-    if ft == "yaml" then
-      bind_keys(current_buf)
-    end
-
-    -- Automatically bind to future YAML buffers inside Gherkio projects
-    local group = vim.api.nvim_create_augroup("GherkioKeymaps", { clear = true })
-    vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
-      group = group,
-      pattern = { "*.yaml", "*.yml" },
-      callback = function(args)
-        bind_keys(args.buf)
-      end
-    })
   end
+
+  -- Bind to current active buffer on startup/lazy-load if it's already a YAML file
+  local current_buf = vim.api.nvim_get_current_buf()
+  local ft = vim.bo[current_buf].filetype
+  if ft == "yaml" then
+    bind_keys(current_buf)
+  end
+
+  -- Automatically bind to future YAML buffers inside Gherkio projects
+  local group = vim.api.nvim_create_augroup("GherkioKeymaps", { clear = true })
+  vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
+    group = group,
+    pattern = { "*.yaml", "*.yml" },
+    callback = function(args)
+      bind_keys(args.buf)
+    end
+  })
 end
 
 return M

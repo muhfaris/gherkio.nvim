@@ -151,8 +151,37 @@ function M.stop_active_job()
   return false
 end
 
+-- Repeat the last executed run target (automatically updates cursor line if step-level execution)
+function M.run_last()
+  if not M.last_run_opts then
+    vim.notify("No Gherkio test has been run yet in this session.", vim.log.levels.WARN)
+    return
+  end
+
+  local current_buf = vim.api.nvim_get_current_buf()
+  local project_root = M.find_project_root(current_buf)
+  if not project_root then
+    vim.notify("No Gherkio project found.", vim.log.levels.WARN)
+    return
+  end
+
+  local opts = vim.deepcopy(M.last_run_opts)
+  opts.bufnr = current_buf
+
+  -- If the last run was specific to a cursor line, update it to the current cursor line
+  if opts.line then
+    local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
+    opts.line = cursor_line
+  end
+
+  M.run_test(opts)
+end
+
 -- Asynchronous test runner mapping failures to quickfix
 function M.run_test(opts)
+  -- Cache the last executed test options for repeating
+  M.last_run_opts = opts
+
   local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
   local project_root = M.find_project_root(bufnr)
   if not project_root then
@@ -319,13 +348,46 @@ function M.process_run_results(bufnr, filepath, passed, output)
   end
 end
 
--- Open a beautiful floating window showing Gherkio test execution output
-function M.show_results_float(output_lines)
-  local bufnr = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_option(bufnr, "buftype", "nofile")
-  vim.api.nvim_buf_set_option(bufnr, "bufhidden", "wipe")
-  vim.api.nvim_buf_set_option(bufnr, "swapfile", false)
-  vim.api.nvim_buf_set_option(bufnr, "filetype", "gherkio-results")
+-- Custom folding expression for gherkio results output
+function M.gherkio_foldexpr(lnum)
+  local line = vim.fn.getline(lnum)
+
+  -- Section headers like ── Setup ──, ── Teardown ──, ── Resolved Variables ──
+  if line:match("^──%s+[%a%s]+%s+──") then
+    return ">1"
+  end
+
+  -- Step headers like 1. GET /login, 12. POST /user
+  if line:match("^%d+%.%s") or line:match("^▼%s") then
+    return ">2"
+  end
+
+  -- Dash separator lines closing a step fold
+  if line:match("^───+$") then
+    return "1"
+  end
+
+  -- Summary section resets at the bottom
+  if line:match("^[✓✗]%s+[PASTFAIL]+%s+.*") or line:match("^%d+%s+passed,%s+%d+%s+failed") or line:match("^Duration:") then
+    return "0"
+  end
+
+  return "="
+end
+
+_G.gherkio_foldexpr = M.gherkio_foldexpr
+
+-- Open a beautiful floating or split window showing Gherkio test execution output
+function M.show_results(output_lines)
+  local win_cfg = config.get("results_window") or {
+    auto_open = true,
+    layout = "vsplit",
+    width = 0.35,
+    height = 0.3,
+    border = "rounded",
+  }
+
+  local layout = win_cfg.layout or "vsplit"
 
   -- Clean ANSI escape codes from output lines
   local cleaned_lines = {}
@@ -334,43 +396,101 @@ function M.show_results_float(output_lines)
     table.insert(cleaned_lines, clean)
   end
 
+  -- Find or create buffer
+  local bufnr = nil
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_option(buf, "filetype") == "gherkio-results" then
+      bufnr = buf
+      break
+    end
+  end
+
+  if not bufnr then
+    bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_option(bufnr, "filetype", "gherkio-results")
+    vim.api.nvim_buf_set_option(bufnr, "buftype", "nofile")
+    vim.api.nvim_buf_set_option(bufnr, "bufhidden", "hide")
+    vim.api.nvim_buf_set_option(bufnr, "swapfile", false)
+  end
+
+  -- Set folding options on buffer
+  vim.api.nvim_buf_set_option(bufnr, "foldmethod", "expr")
+  vim.api.nvim_buf_set_option(bufnr, "foldexpr", "v:lua.gherkio_foldexpr(v:lnum)")
+
+  -- Update buffer contents
+  vim.api.nvim_buf_set_option(bufnr, "modifiable", true)
+  vim.api.nvim_buf_set_option(bufnr, "readonly", false)
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, cleaned_lines)
-
-  local win_cfg = config.get("results_window") or {
-    auto_open = true,
-    width = 0.8,
-    height = 0.6,
-    border = "rounded",
-  }
-
-  local total_cols = vim.o.columns
-  local total_lines = vim.o.lines
-  local width = math.floor(total_cols * (win_cfg.width or 0.8))
-  local height = math.floor(total_lines * (win_cfg.height or 0.6))
-
-  if width < 30 then width = 30 end
-  if height < 5 then height = 5 end
-
-  local row = math.floor((total_lines - height) / 2)
-  local col = math.floor((total_cols - width) / 2)
-
-  local opts = {
-    relative = "editor",
-    row = row,
-    col = col,
-    width = width,
-    height = height,
-    style = "minimal",
-    border = win_cfg.border or "rounded",
-    title = " Gherkio Test Run Output ",
-    title_pos = "center",
-  }
-
-  local win = vim.api.nvim_open_win(bufnr, true, opts)
-
-  -- Make window read-only
   vim.api.nvim_buf_set_option(bufnr, "modifiable", false)
   vim.api.nvim_buf_set_option(bufnr, "readonly", true)
+
+  -- Find or create window based on layout type
+  local win = nil
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == bufnr then
+      win = w
+      break
+    end
+  end
+
+  if layout == "vsplit" then
+    if not win then
+      vim.cmd("botright vsplit")
+      win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(win, bufnr)
+    end
+    local width = math.floor(vim.o.columns * (win_cfg.width or 0.35))
+    if width < 30 then width = 30 end
+    vim.api.nvim_win_set_width(win, width)
+
+  elseif layout == "split" then
+    if not win then
+      vim.cmd("botright split")
+      win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(win, bufnr)
+    end
+    local height = math.floor(vim.o.lines * (win_cfg.height or 0.3))
+    if height < 5 then height = 5 end
+    vim.api.nvim_win_set_height(win, height)
+
+  else -- layout == "float"
+    local total_cols = vim.o.columns
+    local total_lines = vim.o.lines
+    -- Use layout-specific sizes, default to 0.8 / 0.6 if default split values are passed
+    local width_ratio = win_cfg.width == 0.35 and 0.8 or (win_cfg.width or 0.8)
+    local height_ratio = win_cfg.height == 0.3 and 0.6 or (win_cfg.height or 0.6)
+    
+    local width = math.floor(total_cols * width_ratio)
+    local height = math.floor(total_lines * height_ratio)
+
+    if width < 30 then width = 30 end
+    if height < 5 then height = 5 end
+
+    local row = math.floor((total_lines - height) / 2)
+    local col = math.floor((total_cols - width) / 2)
+
+    local opts = {
+      relative = "editor",
+      row = row,
+      col = col,
+      width = width,
+      height = height,
+      style = "minimal",
+      border = win_cfg.border or "rounded",
+      title = " Gherkio Test Run Output ",
+      title_pos = "center",
+    }
+
+    if win then
+      -- If float window already exists, update config
+      vim.api.nvim_win_set_config(win, opts)
+    else
+      win = vim.api.nvim_open_win(bufnr, true, opts)
+    end
+  end
+
+  -- Apply window options
+  vim.api.nvim_win_set_option(win, "foldlevel", 99)
 
   -- Map q, Esc, CR to close the window
   local function close()
@@ -380,8 +500,12 @@ function M.show_results_float(output_lines)
   end
   vim.keymap.set("n", "q", close, { buffer = bufnr, silent = true, nowait = true })
   vim.keymap.set("n", "<Esc>", close, { buffer = bufnr, silent = true, nowait = true })
-  vim.keymap.set("n", "<CR>", close, { buffer = bufnr, silent = true, nowait = true })
+  if layout == "float" then
+    vim.keymap.set("n", "<CR>", close, { buffer = bufnr, silent = true, nowait = true })
+  end
 end
+
+M.show_results_float = M.show_results
 
 -- Convert step to cURL command
 function M.copy_as_curl(opts, on_success)

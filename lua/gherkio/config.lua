@@ -6,6 +6,7 @@ M.defaults = {
     copy_curl       = "<leader>gc",
     paste_dsl       = "<leader>gp",
     preview_request = "<leader>gi",
+    repeat_last     = "<leader>gr",
   },
   picker = "vim.ui.select",
   quickfix = {
@@ -20,13 +21,17 @@ M.defaults = {
   },
   results_window = {
     auto_open = true,
-    width = 0.8,
-    height = 0.6,
+    layout = "vsplit", -- "float" | "vsplit" | "split"
+    width = 0.35,      -- percentage of screen for vsplit, or float
+    height = 0.3,      -- percentage of screen for split, or float
     border = "rounded",
   },
   default_env = "",
   default_account = "",
   verbose = false,
+  lsp_schema = {
+    enabled = true,
+  },
 }
 
 M.options = {}

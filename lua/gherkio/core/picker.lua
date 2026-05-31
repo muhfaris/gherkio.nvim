@@ -9,6 +9,10 @@ local M = {}
 local verbose_override = nil
 local dry_run_override = nil
 
+-- Stateful environment and account cache
+local last_env = nil
+local last_account = nil
+
 -- Wrapper around picker backend configured by the user
 local function ui_select(items, opts, on_choice)
   local picker = config.get("picker")
@@ -47,20 +51,42 @@ function M.open_modal()
     -- Single env, automatically resolve accounts
     M.resolve_accounts({ env = envs[1] })
   else
-    -- Prompt for environment
-    local env_choices = { "Default (None)" }
-    for _, e in ipairs(envs) do
-      table.insert(env_choices, e)
+    -- Multi-env: Check if we have a valid cached env
+    if last_env ~= nil then
+      local env_exists = false
+      for _, e in ipairs(envs) do
+        if e == last_env then
+          env_exists = true
+          break
+        end
+      end
+      if env_exists or last_env == "" then
+        M.resolve_accounts({ env = last_env })
+        return
+      end
     end
 
-    ui_select(env_choices, {
-      prompt = "Select Gherkio Environment:",
-    }, function(choice)
-      if not choice then return end
-      local selected_env = choice == "Default (None)" and "" or choice
-      M.resolve_accounts({ env = selected_env })
-    end)
+    -- No valid cached env, prompt for environment
+    M.prompt_select_env(project_root)
   end
+end
+
+-- Prompt user to select an environment
+function M.prompt_select_env(project_root)
+  local envs = runner.get_available_envs(project_root)
+  local env_choices = { "Default (None)" }
+  for _, e in ipairs(envs) do
+    table.insert(env_choices, e)
+  end
+
+  ui_select(env_choices, {
+    prompt = "Select Gherkio Environment:",
+  }, function(choice)
+    if not choice then return end
+    local selected_env = choice == "Default (None)" and "" or choice
+    last_env = selected_env
+    M.resolve_accounts({ env = selected_env })
+  end)
 end
 
 -- Resolve accounts for selected environment
@@ -82,25 +108,49 @@ function M.resolve_accounts(state)
     state.account = accounts[1]
     M.select_action(state)
   else
-    -- Multiple accounts, show selector
-    local account_choices = { "Default (None)" }
-    for _, acc in ipairs(accounts) do
-      table.insert(account_choices, acc)
+    -- Multi-account: Check if we have a valid cached account
+    if last_account ~= nil then
+      local acc_exists = false
+      for _, acc in ipairs(accounts) do
+        if acc == last_account then
+          acc_exists = true
+          break
+        end
+      end
+      if acc_exists or last_account == "" then
+        state.account = last_account
+        M.select_action(state)
+        return
+      end
     end
 
-    ui_select(account_choices, {
-      prompt = string.format("Select Gherkio Account for env '%s':", state.env),
-    }, function(choice)
-      if not choice then return end
-      state.account = choice == "Default (None)" and "" or choice
-      M.select_action(state)
-    end)
+    -- No valid cached account, prompt for account
+    M.prompt_select_account(project_root, state.env)
   end
+end
+
+-- Prompt user to select an account for a given environment
+function M.prompt_select_account(project_root, env)
+  local accounts = runner.get_available_accounts(project_root, env)
+  local account_choices = { "Default (None)" }
+  for _, acc in ipairs(accounts) do
+    table.insert(account_choices, acc)
+  end
+
+  ui_select(account_choices, {
+    prompt = string.format("Select Gherkio Account for env '%s':", env),
+  }, function(choice)
+    if not choice then return end
+    local selected_acc = choice == "Default (None)" and "" or choice
+    last_account = selected_acc
+    M.select_action({ env = env, account = selected_acc })
+  end)
 end
 
 -- Action selector modal
 function M.select_action(state)
   local bufnr = vim.api.nvim_get_current_buf()
+  local project_root = runner.find_project_root(bufnr)
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
 
   local section = parser.detect_section(bufnr, cursor_line)
@@ -111,16 +161,29 @@ function M.select_action(state)
   
   local items = {}
   if step_idx >= 0 then
-    table.insert(items, { id = "run_cursor", label = string.format("Run Under Cursor (%s step %d)", section, step_idx) })
-    table.insert(items, { id = "preview_request", label = string.format("Preview Current Step as cURL (%s step %d)", section, step_idx) })
-    table.insert(items, { id = "copy_curl", label = string.format("Copy Current Step as cURL (%s step %d)", section, step_idx) })
+    table.insert(items, { id = "run_cursor", label = string.format("🚀 Run Under Cursor (%s step %d)", section, step_idx) })
+    table.insert(items, { id = "preview_request", label = string.format("🔍 Preview Current Step as cURL (%s step %d)", section, step_idx) })
+    table.insert(items, { id = "copy_curl", label = string.format("📋 Copy Current Step as cURL (%s step %d)", section, step_idx) })
   end
-  table.insert(items, { id = "run_section", label = string.format("Run Current Section ('%s')", section) })
-  table.insert(items, { id = "run_until", label = "Run Until Step..." })
-  table.insert(items, { id = "run_all", label = "Run All Steps (Full Scenario)" })
-  table.insert(items, { id = "paste_dsl", label = "Paste cURL as DSL" })
+  table.insert(items, { id = "run_section", label = string.format("⚡ Run Current Section ('%s')", section) })
+  table.insert(items, { id = "run_until", label = "⏳ Run Until Step..." })
+  table.insert(items, { id = "run_all", label = "🏃 Run All Steps (Full Scenario)" })
+  table.insert(items, { id = "paste_dsl", label = "📥 Paste cURL as DSL" })
   table.insert(items, { id = "toggle_verbose", label = verbose_status .. " Verbose output mode" })
   table.insert(items, { id = "toggle_dry_run", label = dry_run_status .. " Dry Run mode (preview request without HTTP call)" })
+
+  -- Configurable settings for switching environments and accounts inside the action picker
+  local envs = runner.get_available_envs(project_root)
+  if #envs > 1 then
+    table.insert(items, { id = "change_env", label = string.format("⚙️ Change Environment (current: %s)", state.env == "" and "Default" or state.env) })
+  end
+
+  if state.env ~= "" then
+    local accounts = runner.get_available_accounts(project_root, state.env)
+    if #accounts > 1 then
+      table.insert(items, { id = "change_account", label = string.format("👤 Change Account (current: %s)", state.account == "" and "Default" or state.account) })
+    end
+  end
 
   local item_labels = {}
   local item_map = {}
@@ -193,6 +256,13 @@ function M.select_action(state)
     elseif action.id == "toggle_dry_run" then
       dry_run_override = not dry_run_override
       M.select_action(state) -- Redraw menu
+    elseif action.id == "change_env" then
+      last_env = nil
+      last_account = nil
+      M.prompt_select_env(project_root)
+    elseif action.id == "change_account" then
+      last_account = nil
+      M.prompt_select_account(project_root, state.env)
     end
   end)
 end
