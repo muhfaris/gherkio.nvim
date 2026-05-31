@@ -29,6 +29,11 @@ local function route_command(opts)
     return
   end
 
+  if sub == "preview" then
+    gherkio.preview_request()
+    return
+  end
+
   if sub == "paste" then
     gherkio.paste_dsl()
     return
@@ -80,7 +85,7 @@ end
 vim.api.nvim_create_user_command("Gherkio", route_command, {
   nargs = "*",
   complete = function(arg_lead, cmd_line, cursor_pos)
-    local subcmds = { "run", "copy", "paste", "stop", "health" }
+    local subcmds = { "run", "preview", "copy", "paste", "stop", "health" }
     local args = vim.split(cmd_line, "%s+")
     
     -- Completing sub-command

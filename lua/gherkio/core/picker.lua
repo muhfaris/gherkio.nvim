@@ -68,9 +68,7 @@ function M.resolve_accounts(state)
   local bufnr = vim.api.nvim_get_current_buf()
   local project_root = runner.find_project_root(bufnr)
 
-  -- Check if $accounts is referenced in the YAML buffer
-  local uses_accounts_syntax = parser.references_accounts(bufnr)
-  if uses_accounts_syntax or state.env == "" then
+  if state.env == "" then
     state.account = ""
     M.select_action(state)
     return
@@ -110,28 +108,19 @@ function M.select_action(state)
 
   local verbose_status = verbose_override and "[x]" or "[ ]"
   local dry_run_status = dry_run_override and "[x]" or "[ ]"
-  local items = {
-    { id = "run_cursor", label = string.format("Run Under Cursor (%s step %d)", section, step_idx) },
-    { id = "run_section", label = string.format("Run Current Section ('%s')", section) },
-    { id = "run_until", label = "Run Until Step..." },
-    { id = "run_all", label = "Run All Steps (Full Scenario)" },
-    { id = "copy_curl", label = string.format("Copy Current Step as cURL (%s step %d)", section, step_idx) },
-    { id = "paste_dsl", label = "Paste cURL as DSL" },
-    { id = "toggle_verbose", label = verbose_status .. " Verbose output mode" },
-    { id = "toggle_dry_run", label = dry_run_status .. " Dry Run mode (preview request without HTTP call)" }
-  }
-
-  -- If no valid step under cursor, disable/hide singular actions
-  if step_idx < 0 then
-    table.remove(items, 1) -- Remove run under cursor
-    -- Copy cURL is at index 4 now (after removing index 1)
-    for i, it in ipairs(items) do
-      if it.id == "copy_curl" then
-        table.remove(items, i)
-        break
-      end
-    end
+  
+  local items = {}
+  if step_idx >= 0 then
+    table.insert(items, { id = "run_cursor", label = string.format("Run Under Cursor (%s step %d)", section, step_idx) })
+    table.insert(items, { id = "preview_request", label = string.format("Preview Current Step as cURL (%s step %d)", section, step_idx) })
+    table.insert(items, { id = "copy_curl", label = string.format("Copy Current Step as cURL (%s step %d)", section, step_idx) })
   end
+  table.insert(items, { id = "run_section", label = string.format("Run Current Section ('%s')", section) })
+  table.insert(items, { id = "run_until", label = "Run Until Step..." })
+  table.insert(items, { id = "run_all", label = "Run All Steps (Full Scenario)" })
+  table.insert(items, { id = "paste_dsl", label = "Paste cURL as DSL" })
+  table.insert(items, { id = "toggle_verbose", label = verbose_status .. " Verbose output mode" })
+  table.insert(items, { id = "toggle_dry_run", label = dry_run_status .. " Dry Run mode (preview request without HTTP call)" })
 
   local item_labels = {}
   local item_map = {}
@@ -181,6 +170,13 @@ function M.select_action(state)
         verbose = verbose_override,
         dry_run = dry_run_override
       })
+    elseif action.id == "preview_request" then
+      runner.copy_as_curl({
+        env = state.env,
+        step = step_idx
+      }, function(curl_cmd)
+        clipboard.show_preview_float(curl_cmd)
+      end)
     elseif action.id == "copy_curl" then
       runner.copy_as_curl({
         env = state.env,

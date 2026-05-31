@@ -90,9 +90,10 @@ require("gherkio").setup({
 
   -- Custom mappings registered inside Gherkio test buffers
   keys = {
-    open_modal = "<leader>g",  -- Opens the cascading interactive selector menu
-    copy_curl  = "<leader>gc", -- Converts current step under cursor to cURL
-    paste_dsl  = "<leader>gp", -- Parses clipboard cURL into Gherkio DSL
+    open_modal      = "<leader>g",  -- Opens the cascading interactive selector menu
+    copy_curl       = "<leader>gc", -- Converts current step under cursor to cURL (copies to clipboard)
+    paste_dsl       = "<leader>gp", -- Parses clipboard cURL into Gherkio DSL
+    preview_request = "<leader>gi", -- Inspects/previews current step in cURL format without copying or running
   }
 })
 ```
@@ -110,7 +111,8 @@ The plugin exposes the `:Gherkio` user command, which includes tab autocomplete 
 | `:Gherkio run all` | Run the complete Gherkio test scenario (all steps). |
 | `:Gherkio run section` | Run only the active section (`setup`, `steps`, or `teardown`) containing the cursor. |
 | `:Gherkio run until <N>` | Execute all steps in the current section up to step `<N>` (0-indexed). |
-| `:Gherkio copy` | Convert the current step under the cursor to cURL and show a floating preview. |
+| `:Gherkio preview` | Preview current step as a cURL command in a floating window (does not copy to clipboard). |
+| `:Gherkio copy` | Convert the current step under the cursor to cURL and copy it to the clipboard. |
 | `:Gherkio paste` | Convert the clipboard cURL command to YAML DSL and paste it under the cursor. |
 | `:Gherkio stop` | Cancel any active background Gherkio execution job. |
 | `:Gherkio health` | Verify plugin dependencies and path validations using `:checkhealth gherkio`. |

@@ -38,6 +38,25 @@ M.copy_curl = function()
   end)
 end
 
+M.preview_request = function()
+  local parser = require("gherkio.core.parser")
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local step_idx = parser.detect_step_index(bufnr, cursor_line)
+
+  if step_idx < 0 then
+    vim.notify("Cursor is not positioned inside a valid test step.", vim.log.levels.WARN)
+    return
+  end
+
+  require("gherkio.core.runner").copy_as_curl({
+    step = step_idx
+  }, function(curl_cmd)
+    local clipboard = require("gherkio.core.clipboard")
+    clipboard.show_preview_float(curl_cmd)
+  end)
+end
+
 M.paste_dsl = function()
   require("gherkio.core.picker").trigger_paste_dsl()
 end
@@ -68,6 +87,9 @@ function M.setup(opts)
         end
         if keys.paste_dsl and keys.paste_dsl ~= "" then
           vim.keymap.set("n", keys.paste_dsl, M.paste_dsl, { buffer = bufnr, silent = true, desc = "Gherkio Paste cURL as DSL" })
+        end
+        if keys.preview_request and keys.preview_request ~= "" then
+          vim.keymap.set("n", keys.preview_request, M.preview_request, { buffer = bufnr, silent = true, desc = "Gherkio Preview Step cURL" })
         end
       end
     end

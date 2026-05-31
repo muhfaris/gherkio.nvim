@@ -2,9 +2,10 @@ local M = {}
 
 M.defaults = {
   keys = {
-    open_modal = "<leader>g",
-    copy_curl  = "<leader>gc",
-    paste_dsl  = "<leader>gp",
+    open_modal      = "<leader>g",
+    copy_curl       = "<leader>gc",
+    paste_dsl       = "<leader>gp",
+    preview_request = "<leader>gi",
   },
   picker = "vim.ui.select",
   quickfix = {
