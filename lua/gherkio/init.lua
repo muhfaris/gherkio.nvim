@@ -69,6 +69,14 @@ M.run_last = function()
   require("gherkio.core.runner").run_last()
 end
 
+M.run_all = function()
+  local state = require("gherkio.core.picker").get_active_state()
+  require("gherkio.core.runner").run_test({
+    env = state.env,
+    account = state.account
+  })
+end
+
 local initialized_roots = {}
 
 local function setup_lsp_schema(project_root)
@@ -175,6 +183,9 @@ function M.setup(opts)
         end
         if keys.repeat_last and keys.repeat_last ~= "" then
           vim.keymap.set("n", keys.repeat_last, M.run_last, { buffer = bufnr, silent = true, desc = "Gherkio Repeat Last Run" })
+        end
+        if keys.run_all and keys.run_all ~= "" then
+          vim.keymap.set("n", keys.run_all, M.run_all, { buffer = bufnr, silent = true, desc = "Gherkio Run All Steps" })
         end
       end
     end

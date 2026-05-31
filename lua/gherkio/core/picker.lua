@@ -329,4 +329,12 @@ function M.trigger_paste_dsl()
   end)
 end
 
+-- Get current cached environment and account state
+function M.get_active_state()
+  return {
+    env = last_env or "",
+    account = last_account or ""
+  }
+end
+
 return M

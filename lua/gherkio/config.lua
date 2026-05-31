@@ -7,6 +7,7 @@ M.defaults = {
     paste_dsl       = "<leader>gp",
     preview_request = "<leader>gi",
     repeat_last     = "<leader>gr",
+    run_all         = "<leader>ga",
   },
   picker = "vim.ui.select",
   quickfix = {
