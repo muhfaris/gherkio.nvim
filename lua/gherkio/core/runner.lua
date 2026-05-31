@@ -413,7 +413,7 @@ end
 
 -- Convert cURL to Gherkio DSL YAML
 function M.paste_as_dsl(curl_string, on_success)
-  local cmd = { "gherkio", "convert" }
+  local cmd = { "gherkio", "convert", "--step-only" }
   local output = {}
 
   if vim.system then
@@ -435,7 +435,7 @@ function M.paste_as_dsl(curl_string, on_success)
       f:close()
     end
 
-    local shell_cmd = string.format("gherkio convert < %s", vim.fn.shellescape(temp_file))
+    local shell_cmd = string.format("gherkio convert --step-only < %s", vim.fn.shellescape(temp_file))
     local dsl_output = vim.fn.system(shell_cmd)
     vim.fn.delete(temp_file)
 

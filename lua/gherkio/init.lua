@@ -34,7 +34,6 @@ M.copy_curl = function()
   }, function(curl_cmd)
     local clipboard = require("gherkio.core.clipboard")
     clipboard.set_contents(curl_cmd)
-    clipboard.show_preview_float(curl_cmd)
     vim.notify("cURL command copied to clipboard!", vim.log.levels.INFO)
   end)
 end
