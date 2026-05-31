@@ -55,18 +55,29 @@ local function parse_yaml_accounts(filepath)
   if not f then return {} end
   local accounts = {}
   local in_accounts = false
+  local accounts_indent = 0
+  local name_indent = nil
+
   for line in f:lines() do
     -- Ignore comments
     if not line:match("^%s*#") then
       local indent, key = line:match("^(%s*)([%w_-]+)%s*:")
       if key then
+        local indent_len = #indent
         if key == "accounts" then
           in_accounts = true
+          accounts_indent = indent_len
+          name_indent = nil
         elseif in_accounts then
-          if #indent == 0 then
+          if indent_len <= accounts_indent then
             in_accounts = false
-          elseif #indent > 0 then
-            table.insert(accounts, key)
+          else
+            if not name_indent then
+              name_indent = indent_len
+            end
+            if indent_len == name_indent then
+              table.insert(accounts, key)
+            end
           end
         end
       end
