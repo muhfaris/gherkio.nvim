@@ -1,106 +1,10 @@
 local parser = require("gherkio.core.parser")
 local config = require("gherkio.config")
+local env = require("gherkio.core.env")
 
 local M = {}
 
 M.active_job = nil
-
--- Traverse up to find .gherkio/ directory
-function M.find_project_root(bufnr)
-  local filepath = vim.api.nvim_buf_get_name(bufnr or 0)
-  local start_dir = ""
-  if filepath ~= "" then
-    start_dir = vim.fs.dirname(filepath)
-  else
-    start_dir = vim.fn.getcwd()
-  end
-
-  local match = vim.fs.find(".gherkio", { path = start_dir, upward = true, type = "directory" })
-  if #match > 0 then
-    return vim.fs.dirname(match[1])
-  end
-
-  -- Fallback: check current working directory
-  if vim.fn.isdirectory(vim.fn.getcwd() .. "/.gherkio") == 1 then
-    return vim.fn.getcwd()
-  end
-
-  return nil
-end
-
--- Resolve available environments in .gherkio/environments/*.yaml
-function M.get_available_envs(project_root)
-  if not project_root then return {} end
-  local envs_dir = project_root .. "/.gherkio/environments"
-  if vim.fn.isdirectory(envs_dir) == 0 then
-    return {}
-  end
-
-  local files = vim.fn.globpath(envs_dir, "*.yaml", false, true)
-  local envs = {}
-  for _, file in ipairs(files) do
-    local filename = vim.fs.basename(file)
-    local env_name = filename:match("^(.*)%.yaml$")
-    if env_name then
-      table.insert(envs, env_name)
-    end
-  end
-  table.sort(envs)
-  return envs
-end
-
--- Parse credentials file to extract accounts indented under accounts: key
-local function parse_yaml_accounts(filepath)
-  local f = io.open(filepath, "r")
-  if not f then return {} end
-  local accounts = {}
-  local in_accounts = false
-  local accounts_indent = 0
-  local name_indent = nil
-
-  for line in f:lines() do
-    -- Ignore comments
-    if not line:match("^%s*#") then
-      local indent, key = line:match("^(%s*)([%w_-]+)%s*:")
-      if key then
-        local indent_len = #indent
-        if key == "accounts" then
-          in_accounts = true
-          accounts_indent = indent_len
-          name_indent = nil
-        elseif in_accounts then
-          if indent_len <= accounts_indent then
-            in_accounts = false
-          else
-            if not name_indent then
-              name_indent = indent_len
-            end
-            if indent_len == name_indent then
-              table.insert(accounts, key)
-            end
-          end
-        end
-      end
-    end
-  end
-  f:close()
-  return accounts
-end
-
--- Resolve available accounts in .gherkio/credentials/<env>.yaml
-function M.get_available_accounts(project_root, env)
-  if not project_root or not env or env == "" then return {} end
-  local creds_file = string.format("%s/.gherkio/credentials/%s.yaml", project_root, env)
-  if vim.fn.filereadable(creds_file) == 0 then
-    -- Fallback: check without extension
-    creds_file = string.format("%s/.gherkio/credentials/%s.yml", project_root, env)
-    if vim.fn.filereadable(creds_file) == 0 then
-      return {}
-    end
-  end
-
-  return parse_yaml_accounts(creds_file)
-end
 
 -- Safe async run wrapper with fallback for older Neovim versions
 local function run_command_async(cmd, on_exit, on_stdout)
@@ -140,6 +44,48 @@ local function run_command_async(cmd, on_exit, on_stdout)
   end
 end
 
+-- Define gutter signs for inline pass/fail feedback
+local signs_defined = false
+local function ensure_signs()
+  if not signs_defined then
+    signs_defined = true
+    vim.fn.sign_define("GherkioPass", { text = "✔", texthl = "String" })
+    vim.fn.sign_define("GherkioFail", { text = "✗", texthl = "ErrorMsg" })
+  end
+end
+
+-- Clear all Gherkio signs from a buffer
+local function clear_signs(bufnr)
+  vim.fn.sign_unplace("gherkio", { buffer = bufnr })
+end
+
+-- Place pass/fail signs on step lines
+local function place_signs(bufnr, step_results)
+  ensure_signs()
+  clear_signs(bufnr)
+  for key, passed in pairs(step_results) do
+    local section, step_idx = key:match("^(.*):(-?%d+)$")
+    if section and step_idx then
+      step_idx = tonumber(step_idx)
+      local steps = parser.get_steps_in_section(bufnr, section)
+      if steps and steps[step_idx + 1] then
+        local line = steps[step_idx + 1] + 1 -- 1-indexed
+        local sign_name = passed and "GherkioPass" or "GherkioFail"
+        vim.fn.sign_place(0, "gherkio", sign_name, bufnr, { lnum = line })
+      end
+    end
+  end
+end
+
+-- Extract assertion path from error message like "body.statusCode: expected 200, got 400"
+local function extract_assertion_path(err_msg)
+  local path = err_msg:match("^%s*(.-):%s")
+  if path then
+    path = path:gsub("^%s*(.-)%s*$", "%1")
+  end
+  return path
+end
+
 -- Terminate active running background job
 function M.stop_active_job()
   if M.active_job then
@@ -159,7 +105,7 @@ function M.run_last()
   end
 
   local current_buf = vim.api.nvim_get_current_buf()
-  local project_root = M.find_project_root(current_buf)
+  local project_root = env.get_project_root(current_buf)
   if not project_root then
     vim.notify("No Gherkio project found.", vim.log.levels.WARN)
     return
@@ -183,7 +129,7 @@ function M.run_test(opts)
   M.last_run_opts = opts
 
   local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
-  local project_root = M.find_project_root(bufnr)
+  local project_root = env.get_project_root(bufnr)
   if not project_root then
     vim.notify("No Gherkio project found. Run `gherkio init` first.", vim.log.levels.WARN)
     return
@@ -202,6 +148,9 @@ function M.run_test(opts)
     M.active_job:kill(15)
   end
 
+  -- Clear old gutter signs from previous run
+  clear_signs(bufnr)
+
   local cmd = { "gherkio", "run", relative_path }
 
   if opts.env and opts.env ~= "" then
@@ -212,11 +161,10 @@ function M.run_test(opts)
     table.insert(cmd, "--account")
     table.insert(cmd, opts.account)
   end
-  if opts.verbose then
-    table.insert(cmd, "-v")
-  end
+  table.insert(cmd, "-v")
   if opts.dry_run then
     table.insert(cmd, "--dry-run")
+    vim.notify("gherkio " .. table.concat(cmd, " "), vim.log.levels.INFO)
   end
 
   if opts.line and opts.line >= 0 then
@@ -247,20 +195,19 @@ function M.run_test(opts)
     display_target = "Until '" .. opts.until_target .. "'"
   end
 
-  local win_cfg = config.get("results_window") or {}
-  local show_notifications = win_cfg.show_notifications
-  if show_notifications == nil then
-    show_notifications = (win_cfg.layout == "float")
-  end
-
-  if show_notifications then
-    vim.notify(string.format("Running Gherkio %s...", display_target), vim.log.levels.INFO)
-  end
+  local progress_notif = nil
+  local total_steps = nil
+  local completed_steps = 0
+  progress_notif = vim.notify(string.format("Running Gherkio %s...", display_target), vim.log.levels.INFO, { title = "Gherkio" })
 
   local output = {}
   M.active_job = run_command_async(cmd, function(obj)
     M.active_job = nil
     local passed = obj.code == 0
+
+    if progress_notif then
+      vim.notify("", vim.log.levels.INFO, { title = "Gherkio", hide = true })
+    end
 
     vim.schedule(function()
       M.process_run_results(bufnr, relative_path, passed, output)
@@ -269,6 +216,18 @@ function M.run_test(opts)
     if data then
       for line in data:gmatch("[^\r\n]+") do
         table.insert(output, line)
+        -- Track progress: detect step headers like "1. POST /login"
+        local clean = line:gsub("%[%d+m", "")
+        local step_num = clean:match("^(%d+)%.%s")
+        if step_num then
+          completed_steps = tonumber(step_num)
+          if not total_steps or completed_steps > total_steps then
+            total_steps = completed_steps
+          end
+          if progress_notif and total_steps then
+            progress_notif = vim.notify(string.format("Executing step %d/%d...", completed_steps, total_steps), vim.log.levels.INFO, { title = "Gherkio", replace = progress_notif })
+          end
+        end
       end
     end
   end)
@@ -278,6 +237,15 @@ end
 function M.process_run_results(bufnr, filepath, passed, output)
   local qf_entries = {}
   local steps_boundaries = parser.get_section_boundaries(bufnr)
+  -- Track pass/fail per step for gutter signs: key = "section:step_idx", value = true/false
+  local step_results = {}
+  -- default all detected steps to pass (will be set false on failure)
+  for sec_name, bound in pairs(steps_boundaries) do
+    local steps = parser.get_steps_in_section(bufnr, sec_name)
+    for i = 0, #steps - 1 do
+      step_results[sec_name .. ":" .. i] = true
+    end
+  end
 
   local function add_qf_entry(text, line_num)
     table.insert(qf_entries, {
@@ -314,19 +282,24 @@ function M.process_run_results(bufnr, filepath, passed, output)
       local err_msg = trimmed:match("^✗%s+(.*)") or trimmed:match("^Error:%s*(.*)")
       local resolved_line = nil
 
-      -- Try mapping the index to line using our parser
+      -- Mark step as failed for gutter sign
       if current_step_idx >= 0 then
-        local steps = parser.get_steps_in_section(bufnr, current_section)
-        if steps[current_step_idx + 1] then
-          resolved_line = steps[current_step_idx + 1] + 1 -- 1-indexed for quickfix
-        end
+        step_results[current_section .. ":" .. current_step_idx] = false
       end
 
-      -- If we couldn't resolve the step line, fall back to matching "line: N" in the output
-      if not resolved_line then
-        local line_match = err_msg:match("%(line:%s*(%d+)%)")
-        if line_match then
-          resolved_line = tonumber(line_match)
+      -- Resolve assertion-level line within the step
+      if current_step_idx >= 0 then
+        local assertion_path = extract_assertion_path(err_msg)
+        local range = parser.get_step_range(bufnr, current_section, current_step_idx)
+        if range and assertion_path then
+          resolved_line = parser.find_assertion_line(bufnr, assertion_path, range.start_line, range.end_line)
+        end
+        -- Fallback to step start line if assertion not found
+        if not resolved_line then
+          local steps = parser.get_steps_in_section(bufnr, current_section)
+          if steps[current_step_idx + 1] then
+            resolved_line = steps[current_step_idx + 1] + 1
+          end
         end
       end
 
@@ -338,27 +311,21 @@ function M.process_run_results(bufnr, filepath, passed, output)
   vim.fn.setqflist(qf_entries, "r")
   vim.fn.setqflist({}, "a", { title = "Gherkio Run Failures" })
 
+  -- Place gutter signs for step pass/fail
+  place_signs(bufnr, step_results)
+
   local win_cfg = config.get("results_window") or { auto_open = true }
   if win_cfg.auto_open then
     M.show_results_float(output)
   end
 
-  local show_notifications = win_cfg.show_notifications
-  if show_notifications == nil then
-    show_notifications = (win_cfg.layout == "float")
-  end
-
   if passed then
-    if show_notifications then
-      vim.notify("✓ Gherkio execution passed!", vim.log.levels.INFO)
-    end
+    vim.notify("✓ Gherkio execution passed!", vim.log.levels.INFO)
     if config.get("quickfix").auto_close then
       vim.cmd("cclose")
     end
   else
-    if show_notifications then
-      vim.notify("✗ Gherkio execution failed! Check quickfix list.", vim.log.levels.ERROR)
-    end
+    vim.notify("✗ Gherkio execution failed! Check quickfix list.", vim.log.levels.ERROR)
     if config.get("quickfix").auto_open and #qf_entries > 0 then
       vim.cmd("copen")
     end
@@ -368,6 +335,11 @@ end
 -- Custom folding expression for gherkio results output
 function M.gherkio_foldexpr(lnum)
   local line = vim.fn.getline(lnum)
+
+  -- Verbose request/response details (always collapsed by default)
+  if line:match("^──%s*Request%s*──") or line:match("^──%s*Response%s*──") then
+    return ">3"
+  end
 
   -- Section headers like ── Setup ──, ── Teardown ──, ── Resolved Variables ──
   if line:match("^──%s+[%a%s]+%s+──") then
@@ -507,7 +479,7 @@ function M.show_results(output_lines)
   end
 
   -- Apply window options
-  vim.api.nvim_win_set_option(win, "foldlevel", 99)
+  vim.api.nvim_win_set_option(win, "foldlevel", 2)
 
   -- Map q, Esc, CR to close the window
   local function close()
@@ -527,7 +499,7 @@ M.show_results_float = M.show_results
 -- Convert step to cURL command
 function M.copy_as_curl(opts, on_success)
   local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
-  local project_root = M.find_project_root(bufnr)
+  local project_root = env.get_project_root(bufnr)
   if not project_root then
     vim.notify("No Gherkio project found.", vim.log.levels.WARN)
     return

@@ -9,9 +9,12 @@ Run test scenarios, convert cURL commands to DSL, view floating command previews
 ## ✨ Features
 
 - ⚡ **Asynchronous Runs**: Execute tests in the background using `vim.system` or `jobstart` without blocking the editor.
-- 🛠️ **Quickfix List Integration**: Automatically maps Gherkio assertions and errors back to exact line numbers in your test buffer.
-- 🎯 **Contextual Step Parser**: Under stands where your cursor is (Setup, Steps, or Teardown) to execute single steps, active sections, or up to specific step boundaries.
+- ✅ **Inline Gutter Signs**: Each step shows `✔` or `✗` in the sign column after a run — results at a glance without switching windows.
+- 🛠️ **Assertion-Level Quickfix**: Failed assertions jump to the exact assertion line inside the step, not the step header.
+- 📊 **Live Progress Indicator**: See "Executing step 2/5..." in real-time as each step runs.
+- 🎯 **Contextual Step Parser**: Understands where your cursor is (Setup, Steps, or Teardown) to execute single steps, active sections, or up to specific step boundaries.
 - 🌐 **Cascading Env & Account Selectors**: Detects `.gherkio/environments/` and credentials config to build interactive options menus using `vim.ui.select` (or custom wrappers like Telescope).
+- 🔑 **Direct Env/Account Switching**: Switch environments (`<leader>ge`) or accounts (`<leader>gk`) without opening the modal.
 - 📋 **cURL Converter**:
   - **Copy to cURL**: Convert any step under your cursor into an executable cURL command, copy it to the clipboard, and display it in a centered, syntax-highlighted floating window.
   - **Paste from cURL**: Automatically convert system or register cURL commands directly into standard Gherkio YAML DSL and paste them at the cursor location.
@@ -58,9 +61,6 @@ use {
 
 ```lua
 require("gherkio").setup({
-  -- Default verbosity flag for CLI runs
-  verbose = false,
-
   -- Interactive modal options picker backend. 
   -- Set to a function to route to Telescope or fzf-lua, e.g.:
   -- picker = require("telescope.themes").get_dropdown({}),
@@ -90,10 +90,15 @@ require("gherkio").setup({
 
   -- Custom mappings registered inside Gherkio test buffers
   keys = {
-    open_modal      = "<leader>g",  -- Opens the cascading interactive selector menu
-    copy_curl       = "<leader>gc", -- Converts current step under cursor to cURL (copies to clipboard)
-    paste_dsl       = "<leader>gp", -- Parses clipboard cURL into Gherkio DSL
-    preview_request = "<leader>gi", -- Inspects/previews current step in cURL format without copying or running
+    open_modal        = "<leader>g",  -- Opens the cascading interactive selector menu
+    copy_curl         = "<leader>gc", -- Converts current step under cursor to cURL (copies to clipboard)
+    paste_dsl         = "<leader>gp", -- Parses clipboard cURL into Gherkio DSL
+    preview_request   = "<leader>gi", -- Inspects/previews current step in cURL format without copying or running
+    run_under_cursor  = "<leader>r",  -- Run the test step under the cursor immediately
+    repeat_last       = "<leader>gr", -- Re-run the last test execution
+    run_all           = "<leader>ga", -- Run the full scenario (all steps)
+    switch_env        = "<leader>ge", -- Switch active environment
+    switch_account    = "<leader>gk", -- Switch active account
   }
 })
 ```
@@ -117,18 +122,38 @@ The plugin exposes the `:Gherkio` user command, which includes tab autocomplete 
 | `:Gherkio stop` | Cancel any active background Gherkio execution job. |
 | `:Gherkio health` | Verify plugin dependencies and path validations using `:checkhealth gherkio`. |
 
-### 🔍 Dry Run Preview & Verbosity Options
+### Keymaps (buffer-local to YAML files)
 
-When using `:Gherkio run` subcommands, you can append options:
-* `--dry-run`: Previews the execution step-by-step and parses all variables **without making any live HTTP requests**.
-* `-v` or `--verbose`: Shows the full request/response headers and bodies inside the output.
+| Key | Action |
+| :--- | :--- |
+| `<leader>g` | Open the interactive action modal |
+| `<leader>r` | Run the test step under the cursor immediately |
+| `<leader>ga` | Run the full scenario (all steps) |
+| `<leader>ge` | Switch active environment |
+| `<leader>gk` | Switch active account |
+| `<leader>gc` | Copy current step as cURL command |
+| `<leader>gp` | Paste cURL from clipboard as DSL |
+| `<leader>gi` | Preview current step as cURL in floating window |
+| `<leader>gr` | Repeat the last test run |
 
-Combine both to **preview actual target requests with fully resolved/interpolated variables** directly inside Neovim without executing them:
+All keymaps are configurable via `config.keys`.
+
+### 🔍 Dry Run Preview
+
+Append `--dry-run` to any run command to preview the execution step-by-step **without making live HTTP requests**:
 ```vim
-:Gherkio run all --dry-run -v
+:Gherkio run all --dry-run
 ```
 
-Alternatively, invoke `:Gherkio` to toggle `[x] Dry Run` and `[x] Verbose` interactively from the menu choices!
+All runs always capture full request/response data. In the results window, the `── Request ──` and `── Response ──` sections are **folded by default** — press `zo` on a step to expand its details.
+
+### Gutter Signs
+
+After every run, each step's `- request:` line shows:
+- `✔` — step passed all assertions
+- `✗` — step failed one or more assertions
+
+Signs clear automatically before the next run.
 
 ---
 

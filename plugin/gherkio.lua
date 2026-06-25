@@ -44,25 +44,22 @@ local function route_command(opts)
     local bufnr = vim.api.nvim_get_current_buf()
     local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
 
-    local verbose = false
     local dry_run = false
     local target = args[2] or ""
     local target_num = args[3] or ""
 
-    -- Parse verbose and dry_run flags anywhere in args
+    -- Parse dry_run flag anywhere in args
     for _, arg in ipairs(args) do
-      if arg == "-v" or arg == "--verbose" then
-        verbose = true
-      elseif arg == "--dry-run" then
+      if arg == "--dry-run" then
         dry_run = true
       end
     end
 
     if target == "all" then
-      gherkio.run_test({ verbose = verbose, dry_run = dry_run })
+      gherkio.run_test({ dry_run = dry_run })
     elseif target == "section" then
       local sec = parser.detect_section(bufnr, cursor_line)
-      gherkio.run_test({ section = sec, verbose = verbose, dry_run = dry_run })
+      gherkio.run_test({ section = sec, dry_run = dry_run })
     elseif target == "until" then
       local sec = parser.detect_section(bufnr, cursor_line)
       local step_num = tonumber(target_num)
@@ -70,10 +67,10 @@ local function route_command(opts)
         vim.notify("Usage: :Gherkio run until <step_number>", vim.log.levels.ERROR)
         return
       end
-      gherkio.run_test({ until_target = string.format("%s:%d", sec, step_num), verbose = verbose, dry_run = dry_run })
+      gherkio.run_test({ until_target = string.format("%s:%d", sec, step_num), dry_run = dry_run })
     else
       -- Defaults: run under cursor
-      gherkio.run_test({ line = cursor_line, verbose = verbose, dry_run = dry_run })
+      gherkio.run_test({ line = cursor_line, dry_run = dry_run })
     end
     return
   end
@@ -101,7 +98,7 @@ vim.api.nvim_create_user_command("Gherkio", route_command, {
 
     -- Completing options inside 'run' sub-command
     if args[2] == "run" then
-      local run_choices = { "all", "section", "until", "-v", "--verbose", "--dry-run" }
+      local run_choices = { "all", "section", "until", "--dry-run" }
       local matches = {}
       for _, c in ipairs(run_choices) do
         if c:sub(1, #arg_lead) == arg_lead then

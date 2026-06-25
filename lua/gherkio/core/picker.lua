@@ -2,11 +2,11 @@ local parser = require("gherkio.core.parser")
 local runner = require("gherkio.core.runner")
 local clipboard = require("gherkio.core.clipboard")
 local config = require("gherkio.config")
+local env = require("gherkio.core.env")
 
 local M = {}
 
--- Local state to preserve verbose override within modal session
-local verbose_override = nil
+-- Local state to preserve dry-run override within modal session
 local dry_run_override = nil
 
 -- Stateful environment and account cache
@@ -30,53 +30,80 @@ end
 -- Cascades picker selections for env, accounts, and actions
 function M.open_modal()
   local bufnr = vim.api.nvim_get_current_buf()
-  local project_root = runner.find_project_root(bufnr)
-  if not project_root then
+  if not env.is_gherkio_project(bufnr) then
     vim.notify("No Gherkio project found. Run `gherkio init` first.", vim.log.levels.WARN)
     return
   end
 
-  if verbose_override == nil then
-    verbose_override = config.get("verbose", false)
-  end
   if dry_run_override == nil then
     dry_run_override = false
   end
 
-  local envs = runner.get_available_envs(project_root)
-  if #envs == 0 then
-    -- No environments, execute actions directly
-    M.select_action({ env = "", account = "" })
-  elseif #envs == 1 then
-    -- Single env, automatically resolve accounts
-    M.resolve_accounts({ env = envs[1] })
-  else
-    -- Multi-env: Check if we have a valid cached env
-    if last_env ~= nil then
-      local env_exists = false
-      for _, e in ipairs(envs) do
-        if e == last_env then
-          env_exists = true
-          break
-        end
-      end
-      if env_exists or last_env == "" then
-        M.resolve_accounts({ env = last_env })
-        return
+  -- Get full context from gherkio CLI
+  local ctx = env.get_context(bufnr)
+  if not ctx then
+    vim.notify("Failed to get environment context from gherkio.", vim.log.levels.ERROR)
+    return
+  end
+
+  local env_count = #ctx.environments
+  local auto = ctx.autoSelect
+
+  -- Determine initial state based on auto-select hints and cache
+  local initial_state = { env = "", account = "" }
+
+  -- Check cache first for multi-env scenarios
+  if env_count > 1 and last_env then
+    -- Validate cached env still exists
+    local env_exists = false
+    for _, e in ipairs(ctx.environments) do
+      if e.name == last_env then
+        env_exists = true
+        break
       end
     end
 
-    -- No valid cached env, prompt for environment
-    M.prompt_select_env(project_root)
+    if env_exists then
+      initial_state.env = last_env
+      -- Also restore account cache if valid
+      if last_account then
+        local accounts = ctx.accounts[last_env] or {}
+        for _, acc in ipairs(accounts) do
+          if acc == last_account then
+            initial_state.account = last_account
+            break
+          end
+        end
+      end
+    end
+  end
+
+  -- If no cached state, apply auto-select hints
+  if initial_state.env == "" then
+    if auto and auto.env and auto.env ~= "" then
+      initial_state.env = auto.env
+      initial_state.account = auto.account or ""
+    end
+  end
+
+  -- Proceed to action selection
+  if env_count == 0 then
+    -- No environments, execute actions directly
+    M.select_action({ env = "", account = "" })
+  elseif initial_state.env == "" then
+    -- Multi-env with no valid cache, prompt
+    M.prompt_select_env(ctx)
+  else
+    -- Has env selected, proceed to action (auto-account already applied)
+    M.select_action(initial_state)
   end
 end
 
 -- Prompt user to select an environment
-function M.prompt_select_env(project_root)
-  local envs = runner.get_available_envs(project_root)
+function M.prompt_select_env(ctx)
   local env_choices = { "Default (None)" }
-  for _, e in ipairs(envs) do
-    table.insert(env_choices, e)
+  for _, e in ipairs(ctx.environments) do
+    table.insert(env_choices, e.name)
   end
 
   ui_select(env_choices, {
@@ -85,22 +112,20 @@ function M.prompt_select_env(project_root)
     if not choice then return end
     local selected_env = choice == "Default (None)" and "" or choice
     last_env = selected_env
-    M.resolve_accounts({ env = selected_env })
+    last_account = nil -- Reset account when env changes
+    M.resolve_accounts({ env = selected_env, accounts = ctx.accounts })
   end)
 end
 
 -- Resolve accounts for selected environment
 function M.resolve_accounts(state)
-  local bufnr = vim.api.nvim_get_current_buf()
-  local project_root = runner.find_project_root(bufnr)
-
   if state.env == "" then
     state.account = ""
     M.select_action(state)
     return
   end
 
-  local accounts = runner.get_available_accounts(project_root, state.env)
+  local accounts = state.accounts and state.accounts[state.env] or {}
   if #accounts == 0 then
     state.account = ""
     M.select_action(state)
@@ -117,7 +142,7 @@ function M.resolve_accounts(state)
           break
         end
       end
-      if acc_exists or last_account == "" then
+      if acc_exists then
         state.account = last_account
         M.select_action(state)
         return
@@ -125,13 +150,12 @@ function M.resolve_accounts(state)
     end
 
     -- No valid cached account, prompt for account
-    M.prompt_select_account(project_root, state.env)
+    M.prompt_select_account(state.env, accounts)
   end
 end
 
 -- Prompt user to select an account for a given environment
-function M.prompt_select_account(project_root, env)
-  local accounts = runner.get_available_accounts(project_root, env)
+function M.prompt_select_account(env, accounts)
   local account_choices = { "Default (None)" }
   for _, acc in ipairs(accounts) do
     table.insert(account_choices, acc)
@@ -150,13 +174,11 @@ end
 -- Action selector modal
 function M.select_action(state)
   local bufnr = vim.api.nvim_get_current_buf()
-  local project_root = runner.find_project_root(bufnr)
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
 
   local section = parser.detect_section(bufnr, cursor_line)
   local step_idx = parser.detect_step_index(bufnr, cursor_line)
 
-  local verbose_status = verbose_override and "[x]" or "[ ]"
   local dry_run_status = dry_run_override and "[x]" or "[ ]"
   
   local items = {}
@@ -169,17 +191,16 @@ function M.select_action(state)
   table.insert(items, { id = "run_until", label = "⏳ Run Until Step..." })
   table.insert(items, { id = "run_all", label = "🏃 Run All Steps (Full Scenario)" })
   table.insert(items, { id = "paste_dsl", label = "📥 Paste cURL as DSL" })
-  table.insert(items, { id = "toggle_verbose", label = verbose_status .. " Verbose output mode" })
   table.insert(items, { id = "toggle_dry_run", label = dry_run_status .. " Dry Run mode (preview request without HTTP call)" })
 
   -- Configurable settings for switching environments and accounts inside the action picker
-  local envs = runner.get_available_envs(project_root)
+  local envs = env.get_available_envs(bufnr)
   if #envs > 1 then
     table.insert(items, { id = "change_env", label = string.format("⚙️ Change Environment (current: %s)", state.env == "" and "Default" or state.env) })
   end
 
   if state.env ~= "" then
-    local accounts = runner.get_available_accounts(project_root, state.env)
+    local accounts = env.get_available_accounts(bufnr, state.env)
     if #accounts > 1 then
       table.insert(items, { id = "change_account", label = string.format("👤 Change Account (current: %s)", state.account == "" and "Default" or state.account) })
     end
@@ -212,7 +233,6 @@ function M.select_action(state)
       runner.run_test({
         env = state.env,
         account = state.account,
-        verbose = verbose_override,
         dry_run = dry_run_override,
         line = cursor_line
       })
@@ -220,7 +240,6 @@ function M.select_action(state)
       runner.run_test({
         env = state.env,
         account = state.account,
-        verbose = verbose_override,
         dry_run = dry_run_override,
         section = section
       })
@@ -230,7 +249,6 @@ function M.select_action(state)
       runner.run_test({
         env = state.env,
         account = state.account,
-        verbose = verbose_override,
         dry_run = dry_run_override
       })
     elseif action.id == "preview_request" then
@@ -250,19 +268,20 @@ function M.select_action(state)
       end)
     elseif action.id == "paste_dsl" then
       M.trigger_paste_dsl()
-    elseif action.id == "toggle_verbose" then
-      verbose_override = not verbose_override
-      M.select_action(state) -- Redraw menu
     elseif action.id == "toggle_dry_run" then
       dry_run_override = not dry_run_override
       M.select_action(state) -- Redraw menu
     elseif action.id == "change_env" then
       last_env = nil
       last_account = nil
-      M.prompt_select_env(project_root)
+      local ctx = env.get_context(bufnr)
+      if ctx then
+        M.prompt_select_env(ctx)
+      end
     elseif action.id == "change_account" then
       last_account = nil
-      M.prompt_select_account(project_root, state.env)
+      local accounts = env.get_available_accounts(bufnr, state.env)
+      M.prompt_select_account(state.env, accounts)
     end
   end)
 end
@@ -290,7 +309,6 @@ function M.prompt_run_until(state, section)
   runner.run_test({
     env = state.env,
     account = state.account,
-    verbose = verbose_override,
     dry_run = dry_run_override,
     until_target = string.format("%s:%d", section, step_num)
   })
@@ -327,6 +345,49 @@ function M.trigger_paste_dsl()
     vim.api.nvim_buf_set_lines(0, line_idx, line_idx, false, lines)
     vim.notify("cURL command parsed and pasted as DSL!", vim.log.levels.INFO)
   end)
+end
+
+-- Switch environment via picker (keybinding-friendly)
+function M.switch_env()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not env.is_gherkio_project(bufnr) then
+    vim.notify("No Gherkio project found.", vim.log.levels.WARN)
+    return
+  end
+  last_env = nil
+  last_account = nil
+  local ctx = env.get_context(bufnr)
+  if ctx then
+    M.prompt_select_env(ctx)
+  end
+end
+
+-- Switch account for current environment via picker (keybinding-friendly)
+function M.switch_account()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not env.is_gherkio_project(bufnr) then
+    vim.notify("No Gherkio project found.", vim.log.levels.WARN)
+    return
+  end
+  local effective_env = last_env or ""
+  if effective_env == "" then
+    -- Try auto-select
+    local ctx = env.get_context(bufnr)
+    if ctx and ctx.autoSelect and ctx.autoSelect.env then
+      effective_env = ctx.autoSelect.env
+    end
+  end
+  if effective_env == "" then
+    vim.notify("No environment selected. Use :Gherkio or switch_env first.", vim.log.levels.WARN)
+    return
+  end
+  last_account = nil
+  local accounts = env.get_available_accounts(bufnr, effective_env)
+  if #accounts <= 1 then
+    vim.notify("Only one account available for '" .. effective_env .. "'.", vim.log.levels.INFO)
+    return
+  end
+  M.prompt_select_account(effective_env, accounts)
 end
 
 -- Get current cached environment and account state

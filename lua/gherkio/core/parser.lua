@@ -94,6 +94,67 @@ function M.detect_step_index(bufnr, cursor_line)
   return #steps - 1
 end
 
+-- Get the line range (start, end) for a given step index within a section (0-indexed)
+-- Returns { start_line, end_line } (0-indexed) or nil
+function M.get_step_range(bufnr, section, step_idx)
+  local steps = M.get_steps_in_section(bufnr, section)
+  if step_idx < 0 or step_idx >= #steps then
+    return nil
+  end
+
+  local start_line = steps[step_idx + 1]
+  local end_line = nil
+  if step_idx + 1 < #steps then
+    end_line = steps[step_idx + 2] - 1
+  else
+    -- Last step in section: end at section boundary
+    local boundaries = M.get_section_boundaries(bufnr)
+    local bound = boundaries[section]
+    if bound then
+      end_line = bound.end_line
+    else
+      return nil
+    end
+  end
+
+  return { start_line = start_line, end_line = end_line }
+end
+
+-- Find the line number (1-indexed) of a specific assertion path within a step
+-- e.g. find_assertion_line(bufnr, "body.statusCode", step_start, step_end)
+-- Returns 1-indexed line number or nil
+function M.find_assertion_line(bufnr, assertion_path, step_start, step_end)
+  if not assertion_path or assertion_path == "" then
+    return nil
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, step_start, step_end + 1, false)
+
+  -- Build variants to match: the path could appear as-is or with a collection matcher suffix
+  -- e.g. "body.items count(body.items).gte" should match lines containing that text
+  local search_patterns = {
+    assertion_path,                    -- exact match first
+    assertion_path:gsub("body%.", ""), -- bare key (without body. prefix)
+  }
+
+  -- Extract the final key name (e.g. "statusCode" from "body.statusCode")
+  local last_key = assertion_path:match("([%w_-]+)$")
+  if last_key then
+    table.insert(search_patterns, last_key)
+  end
+
+  for abs_line_num, line in ipairs(lines) do
+    local trimmed = line:gsub("^%s+", "")
+    for _, pattern in ipairs(search_patterns) do
+      if trimmed:find(pattern, 1, true) then
+        return step_start + abs_line_num -- 1-indexed (0-indexed + 1)
+      end
+    end
+  end
+
+  return nil
+end
+
 -- Scan the buffer for scenario title
 function M.detect_scenario_name(bufnr)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)

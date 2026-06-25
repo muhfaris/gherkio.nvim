@@ -1,4 +1,4 @@
-local runner = require("gherkio.core.runner")
+local env = require("gherkio.core.env")
 local config = require("gherkio.config")
 
 local M = {}
@@ -21,12 +21,12 @@ function M.check()
   end
 
   -- 2. Verify Gherkio project root detection
-  local project_root = runner.find_project_root(0)
+  local project_root = env.get_project_root(0)
   if project_root then
     health.ok(string.format("Gherkio project root detected: %s", project_root))
     
     -- Check environments folder
-    local envs = runner.get_available_envs(project_root)
+    local envs = env.get_available_envs(0)
     if #envs > 0 then
       health.ok(string.format("Detected %d test environments: %s", #envs, table.concat(envs, ", ")))
     else

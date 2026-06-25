@@ -65,6 +65,14 @@ M.open_modal = function()
   require("gherkio.core.picker").open_modal()
 end
 
+M.switch_env = function()
+  require("gherkio.core.picker").switch_env()
+end
+
+M.switch_account = function()
+  require("gherkio.core.picker").switch_account()
+end
+
 M.run_last = function()
   require("gherkio.core.runner").run_last()
 end
@@ -75,6 +83,12 @@ M.run_all = function()
     env = state.env,
     account = state.account
   })
+end
+
+M.run_under_cursor = function()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
+  require("gherkio.core.runner").run_test({ line = cursor_line })
 end
 
 local initialized_roots = {}
@@ -159,8 +173,8 @@ function M.setup(opts)
     local name = vim.api.nvim_buf_get_name(bufnr)
     if name == "" then return end
 
-    local runner = require("gherkio.core.runner")
-    local project_root = runner.find_project_root(bufnr)
+    local env = require("gherkio.core.env")
+    local project_root = env.get_project_root(bufnr)
     if project_root then
       -- Automatically set up JSON Schema validation if enabled
       local lsp_cfg = config.get("lsp_schema")
@@ -186,6 +200,15 @@ function M.setup(opts)
         end
         if keys.run_all and keys.run_all ~= "" then
           vim.keymap.set("n", keys.run_all, M.run_all, { buffer = bufnr, silent = true, desc = "Gherkio Run All Steps" })
+        end
+        if keys.run_under_cursor and keys.run_under_cursor ~= "" then
+          vim.keymap.set("n", keys.run_under_cursor, M.run_under_cursor, { buffer = bufnr, silent = true, desc = "Gherkio Run Under Cursor" })
+        end
+        if keys.switch_env and keys.switch_env ~= "" then
+          vim.keymap.set("n", keys.switch_env, M.switch_env, { buffer = bufnr, silent = true, desc = "Gherkio Switch Environment" })
+        end
+        if keys.switch_account and keys.switch_account ~= "" then
+          vim.keymap.set("n", keys.switch_account, M.switch_account, { buffer = bufnr, silent = true, desc = "Gherkio Switch Account" })
         end
       end
     end

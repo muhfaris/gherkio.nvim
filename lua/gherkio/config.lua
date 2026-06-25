@@ -2,13 +2,16 @@ local M = {}
 
 M.defaults = {
   keys = {
-    open_modal      = "<leader>g",
-    copy_curl       = "<leader>gc",
-    paste_dsl       = "<leader>gp",
-    preview_request = "<leader>gi",
-    repeat_last     = "<leader>gr",
-    run_all         = "<leader>ga",
-  },
+    open_modal        = "<leader>g",
+    copy_curl         = "<leader>gc",
+    paste_dsl         = "<leader>gp",
+    preview_request   = "<leader>gi",
+    repeat_last       = "<leader>gr",
+    run_all           = "<leader>ga",
+    run_under_cursor  = "<leader>r",
+    switch_env        = "<leader>ge",
+    switch_account    = "<leader>gk",
+  }
   picker = "vim.ui.select",
   quickfix = {
     auto_open = true,
@@ -29,7 +32,6 @@ M.defaults = {
   },
   default_env = "",
   default_account = "",
-  verbose = false,
   lsp_schema = {
     enabled = true,
   },
