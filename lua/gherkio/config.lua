@@ -2,13 +2,13 @@ local M = {}
 
 M.defaults = {
 	keys = {
-		open_modal = "<leader>g",
+		open_modal = "<leader>gm",
 		copy_curl = "<leader>gc",
 		paste_dsl = "<leader>gp",
 		preview_request = "<leader>gi",
-		repeat_last = "<leader>gr",
+		repeat_last = "<leader>gl",
 		run_all = "<leader>ga",
-		run_under_cursor = "<leader>r",
+		run_under_cursor = "<leader>gr",
 		switch_env = "<leader>ge",
 		switch_account = "<leader>gk",
 	},

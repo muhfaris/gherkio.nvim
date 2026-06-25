@@ -90,12 +90,12 @@ require("gherkio").setup({
 
   -- Custom mappings registered inside Gherkio test buffers
   keys = {
-    open_modal        = "<leader>g",  -- Opens the cascading interactive selector menu
+    open_modal        = "<leader>gm", -- Opens the cascading interactive selector menu
     copy_curl         = "<leader>gc", -- Converts current step under cursor to cURL (copies to clipboard)
     paste_dsl         = "<leader>gp", -- Parses clipboard cURL into Gherkio DSL
     preview_request   = "<leader>gi", -- Inspects/previews current step in cURL format without copying or running
-    run_under_cursor  = "<leader>r",  -- Run the test step under the cursor immediately
-    repeat_last       = "<leader>gr", -- Re-run the last test execution
+    run_under_cursor  = "<leader>gr", -- Run the test step under the cursor immediately
+    repeat_last       = "<leader>gl", -- Re-run the last test execution
     run_all           = "<leader>ga", -- Run the full scenario (all steps)
     switch_env        = "<leader>ge", -- Switch active environment
     switch_account    = "<leader>gk", -- Switch active account
