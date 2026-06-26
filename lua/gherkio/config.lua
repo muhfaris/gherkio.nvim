@@ -35,6 +35,9 @@ M.defaults = {
 	lsp_schema = {
 		enabled = true,
 	},
+	notifications = {
+		enabled = true,
+	},
 }
 
 M.options = {}

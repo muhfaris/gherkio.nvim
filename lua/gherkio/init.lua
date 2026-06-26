@@ -11,7 +11,17 @@ end
 
 -- Lazy functions mapped directly to internal modules
 M.run_test = function(opts)
-  require("gherkio.core.runner").run_test(opts or {})
+  opts = opts or {}
+  local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
+  if opts.env or opts.account then
+    require("gherkio.core.runner").run_test(opts)
+  else
+    require("gherkio.core.picker").ensure_env_and_account(bufnr, function(selected_env, selected_account)
+      opts.env = selected_env
+      opts.account = selected_account
+      require("gherkio.core.runner").run_test(opts)
+    end)
+  end
 end
 
 M.stop_job = function()
@@ -78,17 +88,13 @@ M.run_last = function()
 end
 
 M.run_all = function()
-  local state = require("gherkio.core.picker").get_active_state()
-  require("gherkio.core.runner").run_test({
-    env = state.env,
-    account = state.account
-  })
+  M.run_test({})
 end
 
 M.run_under_cursor = function()
   local bufnr = vim.api.nvim_get_current_buf()
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
-  require("gherkio.core.runner").run_test({ line = cursor_line })
+  M.run_test({ line = cursor_line, bufnr = bufnr })
 end
 
 local initialized_roots = {}

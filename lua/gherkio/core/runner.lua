@@ -195,10 +195,20 @@ function M.run_test(opts)
     display_target = "Until '" .. opts.until_target .. "'"
   end
 
+  local notif_cfg = config.get("notifications")
+  local show_notif = true
+  if notif_cfg == false then
+    show_notif = false
+  elseif type(notif_cfg) == "table" and notif_cfg.enabled == false then
+    show_notif = false
+  end
+
   local progress_notif = nil
   local total_steps = nil
   local completed_steps = 0
-  progress_notif = vim.notify(string.format("Running Gherkio %s...", display_target), vim.log.levels.INFO, { title = "Gherkio" })
+  if show_notif then
+    progress_notif = vim.notify(string.format("Running Gherkio %s...", display_target), vim.log.levels.INFO, { title = "Gherkio" })
+  end
 
   local output = {}
   M.active_job = run_command_async(cmd, function(obj)
@@ -236,16 +246,8 @@ end
 -- Process run results to extract failures and build quickfix entries
 function M.process_run_results(bufnr, filepath, passed, output)
   local qf_entries = {}
-  local steps_boundaries = parser.get_section_boundaries(bufnr)
   -- Track pass/fail per step for gutter signs: key = "section:step_idx", value = true/false
   local step_results = {}
-  -- default all detected steps to pass (will be set false on failure)
-  for sec_name, bound in pairs(steps_boundaries) do
-    local steps = parser.get_steps_in_section(bufnr, sec_name)
-    for i = 0, #steps - 1 do
-      step_results[sec_name .. ":" .. i] = true
-    end
-  end
 
   local function add_qf_entry(text, line_num)
     table.insert(qf_entries, {
@@ -275,6 +277,7 @@ function M.process_run_results(bufnr, filepath, passed, output)
     local step_num_match = trimmed:match("^(%d+)%.%s+(.*)")
     if step_num_match then
       current_step_idx = tonumber(step_num_match) - 1
+      step_results[current_section .. ":" .. current_step_idx] = true
     end
 
     -- Detect step/assertion failure indicators
@@ -319,13 +322,25 @@ function M.process_run_results(bufnr, filepath, passed, output)
     M.show_results_float(output)
   end
 
+  local notif_cfg = config.get("notifications")
+  local show_notif = true
+  if notif_cfg == false then
+    show_notif = false
+  elseif type(notif_cfg) == "table" and notif_cfg.enabled == false then
+    show_notif = false
+  end
+
   if passed then
-    vim.notify("✓ Gherkio execution passed!", vim.log.levels.INFO)
+    if show_notif then
+      vim.notify("✓ Gherkio execution passed!", vim.log.levels.INFO)
+    end
     if config.get("quickfix").auto_close then
       vim.cmd("cclose")
     end
   else
-    vim.notify("✗ Gherkio execution failed! Check quickfix list.", vim.log.levels.ERROR)
+    if show_notif then
+      vim.notify("✗ Gherkio execution failed! Check quickfix list.", vim.log.levels.ERROR)
+    end
     if config.get("quickfix").auto_open and #qf_entries > 0 then
       vim.cmd("copen")
     end

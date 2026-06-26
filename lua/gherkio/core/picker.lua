@@ -390,6 +390,127 @@ function M.switch_account()
   M.prompt_select_account(effective_env, accounts)
 end
 
+-- Helper to ensure env and account are resolved (cached/auto-selected/prompted)
+-- before running a test or action.
+-- Calls callback(selected_env, selected_account) upon successful resolution.
+function M.ensure_env_and_account(bufnr, callback)
+  if not env.is_gherkio_project(bufnr) then
+    vim.notify("No Gherkio project found. Run `gherkio init` first.", vim.log.levels.WARN)
+    return
+  end
+
+  local ctx = env.get_context(bufnr)
+  if not ctx then
+    vim.notify("Failed to get environment context from gherkio.", vim.log.levels.ERROR)
+    return
+  end
+
+  local env_count = ctx.environments and #ctx.environments or 0
+  if env_count == 0 then
+    callback("", "")
+    return
+  end
+
+  -- Determine if we already have a valid environment (from cache or autoSelect)
+  local resolved_env = nil
+
+  if last_env then
+    -- Validate cached env still exists
+    for _, e in ipairs(ctx.environments or {}) do
+      if e.name == last_env then
+        resolved_env = last_env
+        break
+      end
+    end
+  end
+
+  if not resolved_env and ctx.autoSelect and ctx.autoSelect.env and ctx.autoSelect.env ~= "" then
+    -- Validate autoSelect env exists
+    for _, e in ipairs(ctx.environments or {}) do
+      if e.name == ctx.autoSelect.env then
+        resolved_env = ctx.autoSelect.env
+        break
+      end
+    end
+  end
+
+  -- Helper to resolve account once env is determined
+  local function resolve_account(selected_env)
+    if selected_env == "" then
+      callback("", "")
+      return
+    end
+
+    local accounts = ctx.accounts and ctx.accounts[selected_env] or {}
+    if #accounts == 0 then
+      callback(selected_env, "")
+      return
+    end
+
+    if #accounts == 1 then
+      callback(selected_env, accounts[1])
+      return
+    end
+
+    -- Check cache
+    if last_account then
+      for _, acc in ipairs(accounts) do
+        if acc == last_account then
+          callback(selected_env, last_account)
+          return
+        end
+      end
+    end
+
+    -- Check autoSelect account
+    if ctx.autoSelect and ctx.autoSelect.env == selected_env and ctx.autoSelect.account and ctx.autoSelect.account ~= "" then
+      for _, acc in ipairs(accounts) do
+        if acc == ctx.autoSelect.account then
+          callback(selected_env, ctx.autoSelect.account)
+          return
+        end
+      end
+    end
+
+    -- If no valid cached or auto-selected account, prompt the user
+    local account_choices = { "Default (None)" }
+    for _, acc in ipairs(accounts) do
+      table.insert(account_choices, acc)
+    end
+
+    ui_select(account_choices, {
+      prompt = string.format("Select Gherkio Account for env '%s':", selected_env),
+    }, function(choice)
+      if not choice then return end -- Aborted by user
+      local selected_acc = choice == "Default (None)" and "" or choice
+      last_account = selected_acc
+      callback(selected_env, selected_acc)
+    end)
+  end
+
+  -- If env is already resolved, go straight to resolving account
+  if resolved_env then
+    resolve_account(resolved_env)
+    return
+  end
+
+  -- Otherwise, prompt for env first
+  local env_choices = { "Default (None)" }
+  for _, e in ipairs(ctx.environments or {}) do
+    table.insert(env_choices, e.name)
+  end
+
+  ui_select(env_choices, {
+    prompt = "Select Gherkio Environment:",
+  }, function(choice)
+    if not choice then return end -- Aborted by user
+    local selected_env = choice == "Default (None)" and "" or choice
+    last_env = selected_env
+    last_account = nil -- Reset account when env changes
+    resolve_account(selected_env)
+  end)
+end
+
 -- Get current cached environment and account state
 function M.get_active_state()
   return {
@@ -399,3 +520,4 @@ function M.get_active_state()
 end
 
 return M
+
