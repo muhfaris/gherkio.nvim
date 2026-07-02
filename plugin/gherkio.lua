@@ -39,27 +39,37 @@ local function route_command(opts)
     return
   end
 
+  if sub == "results" then
+    gherkio.reopen_results()
+    return
+  end
+
   if sub == "run" then
     local parser = require("gherkio.core.parser")
     local bufnr = vim.api.nvim_get_current_buf()
     local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
 
     local dry_run = false
+    local verbose = nil
     local target = args[2] or ""
     local target_num = args[3] or ""
 
-    -- Parse dry_run flag anywhere in args
+    -- Parse flags anywhere in args
     for _, arg in ipairs(args) do
       if arg == "--dry-run" then
         dry_run = true
+      elseif arg == "--verbose" then
+        verbose = true
+      elseif arg == "--no-verbose" then
+        verbose = false
       end
     end
 
     if target == "all" then
-      gherkio.run_test({ dry_run = dry_run })
+      gherkio.run_test({ dry_run = dry_run, verbose = verbose })
     elseif target == "section" then
       local sec = parser.detect_section(bufnr, cursor_line)
-      gherkio.run_test({ section = sec, dry_run = dry_run })
+      gherkio.run_test({ section = sec, dry_run = dry_run, verbose = verbose })
     elseif target == "until" then
       local sec = parser.detect_section(bufnr, cursor_line)
       local step_num = tonumber(target_num)
@@ -67,10 +77,10 @@ local function route_command(opts)
         vim.notify("Usage: :Gherkio run until <step_number>", vim.log.levels.ERROR)
         return
       end
-      gherkio.run_test({ until_target = string.format("%s:%d", sec, step_num), dry_run = dry_run })
+      gherkio.run_test({ until_target = string.format("%s:%d", sec, step_num), dry_run = dry_run, verbose = verbose })
     else
       -- Defaults: run under cursor
-      gherkio.run_test({ line = cursor_line, dry_run = dry_run })
+      gherkio.run_test({ line = cursor_line, dry_run = dry_run, verbose = verbose })
     end
     return
   end
@@ -82,7 +92,7 @@ end
 vim.api.nvim_create_user_command("Gherkio", route_command, {
   nargs = "*",
   complete = function(arg_lead, cmd_line, cursor_pos)
-    local subcmds = { "run", "preview", "copy", "paste", "stop", "health" }
+    local subcmds = { "run", "preview", "copy", "paste", "stop", "health", "results" }
     local args = vim.split(cmd_line, "%s+")
     
     -- Completing sub-command
@@ -98,7 +108,7 @@ vim.api.nvim_create_user_command("Gherkio", route_command, {
 
     -- Completing options inside 'run' sub-command
     if args[2] == "run" then
-      local run_choices = { "all", "section", "until", "--dry-run" }
+      local run_choices = { "all", "section", "until", "--dry-run", "--verbose", "--no-verbose" }
       local matches = {}
       for _, c in ipairs(run_choices) do
         if c:sub(1, #arg_lead) == arg_lead then

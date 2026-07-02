@@ -35,6 +35,8 @@ function M.open_modal()
     return
   end
 
+  env.invalidate_cache()
+
   if dry_run_override == nil then
     dry_run_override = false
   end
@@ -100,7 +102,7 @@ function M.open_modal()
 end
 
 -- Prompt user to select an environment
-function M.prompt_select_env(ctx)
+function M.prompt_select_env(ctx, on_resolve)
   local env_choices = { "Default (None)" }
   for _, e in ipairs(ctx.environments) do
     table.insert(env_choices, e.name)
@@ -113,25 +115,37 @@ function M.prompt_select_env(ctx)
     local selected_env = choice == "Default (None)" and "" or choice
     last_env = selected_env
     last_account = nil -- Reset account when env changes
-    M.resolve_accounts({ env = selected_env, accounts = ctx.accounts })
+    M.resolve_accounts({ env = selected_env, accounts = ctx.accounts }, on_resolve)
   end)
 end
 
 -- Resolve accounts for selected environment
-function M.resolve_accounts(state)
+function M.resolve_accounts(state, on_resolve)
   if state.env == "" then
     state.account = ""
-    M.select_action(state)
+    if on_resolve then
+      on_resolve(state)
+    else
+      M.select_action(state)
+    end
     return
   end
 
   local accounts = state.accounts and state.accounts[state.env] or {}
   if #accounts == 0 then
     state.account = ""
-    M.select_action(state)
+    if on_resolve then
+      on_resolve(state)
+    else
+      M.select_action(state)
+    end
   elseif #accounts == 1 then
     state.account = accounts[1]
-    M.select_action(state)
+    if on_resolve then
+      on_resolve(state)
+    else
+      M.select_action(state)
+    end
   else
     -- Multi-account: Check if we have a valid cached account
     if last_account ~= nil then
@@ -144,18 +158,22 @@ function M.resolve_accounts(state)
       end
       if acc_exists then
         state.account = last_account
-        M.select_action(state)
+        if on_resolve then
+          on_resolve(state)
+        else
+          M.select_action(state)
+        end
         return
       end
     end
 
     -- No valid cached account, prompt for account
-    M.prompt_select_account(state.env, accounts)
+    M.prompt_select_account(state.env, accounts, on_resolve)
   end
 end
 
 -- Prompt user to select an account for a given environment
-function M.prompt_select_account(env, accounts)
+function M.prompt_select_account(env, accounts, on_resolve)
   local account_choices = { "Default (None)" }
   for _, acc in ipairs(accounts) do
     table.insert(account_choices, acc)
@@ -167,7 +185,12 @@ function M.prompt_select_account(env, accounts)
     if not choice then return end
     local selected_acc = choice == "Default (None)" and "" or choice
     last_account = selected_acc
-    M.select_action({ env = env, account = selected_acc })
+    local state = { env = env, account = selected_acc }
+    if on_resolve then
+      on_resolve(state)
+    else
+      M.select_action(state)
+    end
   end)
 end
 
@@ -280,6 +303,12 @@ function M.select_action(state)
       end
     elseif action.id == "change_account" then
       last_account = nil
+      -- Clear session file so saved vars from the old account don't bleed into the new one
+      local proj_root = env.get_project_root(bufnr)
+      if proj_root then
+        local session_file = proj_root .. "/.gherkio/session.yaml"
+        vim.fn.delete(session_file)
+      end
       local accounts = env.get_available_accounts(bufnr, state.env)
       M.prompt_select_account(state.env, accounts)
     end
@@ -354,11 +383,22 @@ function M.switch_env()
     vim.notify("No Gherkio project found.", vim.log.levels.WARN)
     return
   end
+  env.invalidate_cache()
   last_env = nil
   last_account = nil
+  -- Clear session file so saved vars from the old account/env don't bleed
+  local proj_root = env.get_project_root(bufnr)
+  if proj_root then
+    local session_file = proj_root .. "/.gherkio/session.yaml"
+    vim.fn.delete(session_file)
+  end
   local ctx = env.get_context(bufnr)
   if ctx then
-    M.prompt_select_env(ctx)
+    M.prompt_select_env(ctx, function(state)
+      local env_str = state.env ~= "" and state.env or "default"
+      local acc_str = state.account ~= "" and state.account or "none"
+      vim.notify(string.format("Gherkio: Active environment set to '%s' (account: '%s')", env_str, acc_str), vim.log.levels.INFO)
+    end)
   end
 end
 
@@ -369,6 +409,7 @@ function M.switch_account()
     vim.notify("No Gherkio project found.", vim.log.levels.WARN)
     return
   end
+  env.invalidate_cache()
   local effective_env = last_env or ""
   if effective_env == "" then
     -- Try auto-select
@@ -387,7 +428,17 @@ function M.switch_account()
     vim.notify("Only one account available for '" .. effective_env .. "'.", vim.log.levels.INFO)
     return
   end
-  M.prompt_select_account(effective_env, accounts)
+  M.prompt_select_account(effective_env, accounts, function(state)
+    -- Clear session file so saved vars from the previous account (e.g. $email)
+    -- don't bleed into the new account's run.
+    local project_root = env.get_project_root(bufnr)
+    if project_root then
+      local session_file = project_root .. "/.gherkio/session.yaml"
+      vim.fn.delete(session_file)
+    end
+    local acc_str = state.account ~= "" and state.account or "none"
+    vim.notify(string.format("Gherkio: Active account set to '%s' for environment '%s'", acc_str, state.env), vim.log.levels.INFO)
+  end)
 end
 
 -- Helper to ensure env and account are resolved (cached/auto-selected/prompted)
@@ -398,6 +449,8 @@ function M.ensure_env_and_account(bufnr, callback)
     vim.notify("No Gherkio project found. Run `gherkio init` first.", vim.log.levels.WARN)
     return
   end
+
+  env.invalidate_cache()
 
   local ctx = env.get_context(bufnr)
   if not ctx then

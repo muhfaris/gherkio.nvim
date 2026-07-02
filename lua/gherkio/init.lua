@@ -87,6 +87,10 @@ M.run_last = function()
   require("gherkio.core.runner").run_last()
 end
 
+M.reopen_results = function()
+  require("gherkio.core.results").reopen_results()
+end
+
 M.run_all = function()
   M.run_test({})
 end

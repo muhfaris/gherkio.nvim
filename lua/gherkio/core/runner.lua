@@ -161,7 +161,16 @@ function M.run_test(opts)
     table.insert(cmd, "--account")
     table.insert(cmd, opts.account)
   end
-  table.insert(cmd, "-v")
+  local is_verbose = true
+  if opts.verbose ~= nil then
+    is_verbose = opts.verbose
+  else
+    is_verbose = config.get("verbose", true)
+  end
+
+  if is_verbose then
+    table.insert(cmd, "-v")
+  end
   if opts.dry_run then
     table.insert(cmd, "--dry-run")
     vim.notify("gherkio " .. table.concat(cmd, " "), vim.log.levels.INFO)
@@ -211,7 +220,12 @@ function M.run_test(opts)
   end
 
   local output = {}
-  M.active_job = run_command_async(cmd, function(obj)
+
+  -- Show streaming results window immediately (loading state)
+  local results_mod = require("gherkio.core.results")
+  results_mod.show_streaming(display_target)
+
+  M.active_job = run_command_async(cmd, vim.schedule_wrap(function(obj)
     M.active_job = nil
     local passed = obj.code == 0
 
@@ -219,13 +233,12 @@ function M.run_test(opts)
       vim.notify("", vim.log.levels.INFO, { title = "Gherkio", hide = true })
     end
 
-    vim.schedule(function()
-      M.process_run_results(bufnr, relative_path, passed, output)
-    end)
-  end, function(err, data)
+    M.process_run_results(bufnr, relative_path, passed, output)
+  end), vim.schedule_wrap(function(err, data)
     if data then
       for line in data:gmatch("[^\r\n]+") do
         table.insert(output, line)
+        results_mod.append_streaming_line(line)
         -- Track progress: detect step headers like "1. POST /login"
         local clean = line:gsub("%[%d+m", "")
         local step_num = clean:match("^(%d+)%.%s")
@@ -240,14 +253,34 @@ function M.run_test(opts)
         end
       end
     end
-  end)
+  end))
 end
 
 -- Process run results to extract failures and build quickfix entries
 function M.process_run_results(bufnr, filepath, passed, output)
+  local is_single_step = false
+  local target_section = nil
+  local target_step_idx = nil
+
+  if M.last_run_opts then
+    if M.last_run_opts.line and M.last_run_opts.line >= 0 then
+      is_single_step = true
+      target_section = parser.detect_section(bufnr, M.last_run_opts.line)
+      target_step_idx = parser.detect_step_index(bufnr, M.last_run_opts.line)
+    elseif M.last_run_opts.step and M.last_run_opts.step >= 0 then
+      is_single_step = true
+      target_section = M.last_run_opts.section or "steps"
+      target_step_idx = M.last_run_opts.step
+    end
+  end
+
   local qf_entries = {}
   -- Track pass/fail per step for gutter signs: key = "section:step_idx", value = true/false
   local step_results = {}
+
+  if is_single_step and target_section and target_step_idx then
+    step_results[target_section .. ":" .. target_step_idx] = passed
+  end
 
   local function add_qf_entry(text, line_num)
     table.insert(qf_entries, {
@@ -266,18 +299,31 @@ function M.process_run_results(bufnr, filepath, passed, output)
     local clean_line = line:gsub("%[%d+m", "") -- Strip ANSI escape codes
     local trimmed = clean_line:gsub("^%s+", "")
 
-    -- Detect active section changes in stdout
-    if trimmed:match("^── Setup ──") then
-      current_section = "setup"
-    elseif trimmed:match("^── Teardown ──") then
-      current_section = "teardown"
+    -- Detect active section changes in stdout (e.g., ── Setup ──, ── Steps ──, ── Teardown ──)
+    local sec_header = clean_line:match("^──%s+([%a%s]+)%s+──$")
+    if sec_header then
+      current_section = sec_header:lower()
+      current_step_idx = -1
     end
 
     -- Match step indicators in Gherkio print output: e.g. "1. GET /api", "├ GET /api", etc.
     local step_num_match = trimmed:match("^(%d+)%.%s+(.*)")
     if step_num_match then
-      current_step_idx = tonumber(step_num_match) - 1
-      step_results[current_section .. ":" .. current_step_idx] = true
+      local parsed_idx = tonumber(step_num_match) - 1
+      if is_single_step then
+        -- In a single-step run, the first step index in CLI output (parsed_idx == 0)
+        -- corresponds to our target step. Any other parsed steps are nested sub-steps.
+        if parsed_idx == 0 then
+          current_section = target_section
+          current_step_idx = target_step_idx
+          step_results[current_section .. ":" .. current_step_idx] = true
+        else
+          current_step_idx = -1
+        end
+      else
+        current_step_idx = parsed_idx
+        step_results[current_section .. ":" .. current_step_idx] = true
+      end
     end
 
     -- Detect step/assertion failure indicators
@@ -319,7 +365,7 @@ function M.process_run_results(bufnr, filepath, passed, output)
 
   local win_cfg = config.get("results_window") or { auto_open = true }
   if win_cfg.auto_open then
-    M.show_results_float(output)
+    require("gherkio.core.results").finalize_streaming(output)
   end
 
   local notif_cfg = config.get("notifications")
@@ -347,169 +393,6 @@ function M.process_run_results(bufnr, filepath, passed, output)
   end
 end
 
--- Custom folding expression for gherkio results output
-function M.gherkio_foldexpr(lnum)
-  local line = vim.fn.getline(lnum)
-
-  -- Verbose request/response details (always collapsed by default)
-  if line:match("^──%s*Request%s*──") or line:match("^──%s*Response%s*──") then
-    return ">3"
-  end
-
-  -- Section headers like ── Setup ──, ── Teardown ──, ── Resolved Variables ──
-  if line:match("^──%s+[%a%s]+%s+──") then
-    return ">1"
-  end
-
-  -- Step headers like 1. GET /login, 12. POST /user
-  if line:match("^%d+%.%s") or line:match("^▼%s") then
-    return ">2"
-  end
-
-  -- Dash separator lines closing a step fold
-  if line:match("^───+$") then
-    return "1"
-  end
-
-  -- Summary section resets at the bottom
-  if line:match("^[✓✗]%s+[PASTFAIL]+%s+.*") or line:match("^%d+%s+passed,%s+%d+%s+failed") or line:match("^Duration:") then
-    return "0"
-  end
-
-  return "="
-end
-
-_G.gherkio_foldexpr = M.gherkio_foldexpr
-
--- Open a beautiful floating or split window showing Gherkio test execution output
-function M.show_results(output_lines)
-  local win_cfg = config.get("results_window") or {
-    auto_open = true,
-    layout = "vsplit",
-    width = 0.35,
-    height = 0.3,
-    border = "rounded",
-  }
-
-  local layout = win_cfg.layout or "vsplit"
-
-  -- Clean ANSI escape codes from output lines
-  local cleaned_lines = {}
-  for _, line in ipairs(output_lines) do
-    local clean = line:gsub("\27%[[%d;]*%a", "") -- Strip ANSI escape codes
-    table.insert(cleaned_lines, clean)
-  end
-
-  -- Find or create buffer
-  local bufnr = nil
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_option(buf, "filetype") == "gherkio-results" then
-      bufnr = buf
-      break
-    end
-  end
-
-  if not bufnr then
-    bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_option(bufnr, "filetype", "gherkio-results")
-    vim.api.nvim_buf_set_option(bufnr, "buftype", "nofile")
-    vim.api.nvim_buf_set_option(bufnr, "bufhidden", "hide")
-    vim.api.nvim_buf_set_option(bufnr, "swapfile", false)
-  end
-
-  -- Set folding options on buffer
-  vim.api.nvim_buf_set_option(bufnr, "foldmethod", "expr")
-  vim.api.nvim_buf_set_option(bufnr, "foldexpr", "v:lua.gherkio_foldexpr(v:lnum)")
-
-  -- Update buffer contents
-  vim.api.nvim_buf_set_option(bufnr, "modifiable", true)
-  vim.api.nvim_buf_set_option(bufnr, "readonly", false)
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, cleaned_lines)
-  vim.api.nvim_buf_set_option(bufnr, "modifiable", false)
-  vim.api.nvim_buf_set_option(bufnr, "readonly", true)
-
-  -- Find or create window based on layout type
-  local win = nil
-  for _, w in ipairs(vim.api.nvim_list_wins()) do
-    if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == bufnr then
-      win = w
-      break
-    end
-  end
-
-  if layout == "vsplit" then
-    if not win then
-      vim.cmd("botright vsplit")
-      win = vim.api.nvim_get_current_win()
-      vim.api.nvim_win_set_buf(win, bufnr)
-    end
-    local width = math.floor(vim.o.columns * (win_cfg.width or 0.35))
-    if width < 30 then width = 30 end
-    vim.api.nvim_win_set_width(win, width)
-
-  elseif layout == "split" then
-    if not win then
-      vim.cmd("botright split")
-      win = vim.api.nvim_get_current_win()
-      vim.api.nvim_win_set_buf(win, bufnr)
-    end
-    local height = math.floor(vim.o.lines * (win_cfg.height or 0.3))
-    if height < 5 then height = 5 end
-    vim.api.nvim_win_set_height(win, height)
-
-  else -- layout == "float"
-    local total_cols = vim.o.columns
-    local total_lines = vim.o.lines
-    -- Use layout-specific sizes, default to 0.8 / 0.6 if default split values are passed
-    local width_ratio = win_cfg.width == 0.35 and 0.8 or (win_cfg.width or 0.8)
-    local height_ratio = win_cfg.height == 0.3 and 0.6 or (win_cfg.height or 0.6)
-    
-    local width = math.floor(total_cols * width_ratio)
-    local height = math.floor(total_lines * height_ratio)
-
-    if width < 30 then width = 30 end
-    if height < 5 then height = 5 end
-
-    local row = math.floor((total_lines - height) / 2)
-    local col = math.floor((total_cols - width) / 2)
-
-    local opts = {
-      relative = "editor",
-      row = row,
-      col = col,
-      width = width,
-      height = height,
-      style = "minimal",
-      border = win_cfg.border or "rounded",
-      title = " Gherkio Test Run Output ",
-      title_pos = "center",
-    }
-
-    if win then
-      -- If float window already exists, update config
-      vim.api.nvim_win_set_config(win, opts)
-    else
-      win = vim.api.nvim_open_win(bufnr, true, opts)
-    end
-  end
-
-  -- Apply window options
-  vim.api.nvim_win_set_option(win, "foldlevel", 2)
-
-  -- Map q, Esc, CR to close the window
-  local function close()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-  end
-  vim.keymap.set("n", "q", close, { buffer = bufnr, silent = true, nowait = true })
-  vim.keymap.set("n", "<Esc>", close, { buffer = bufnr, silent = true, nowait = true })
-  if layout == "float" then
-    vim.keymap.set("n", "<CR>", close, { buffer = bufnr, silent = true, nowait = true })
-  end
-end
-
-M.show_results_float = M.show_results
 
 -- Convert step to cURL command
 function M.copy_as_curl(opts, on_success)

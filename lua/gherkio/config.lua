@@ -14,8 +14,8 @@ M.defaults = {
 	},
 	picker = "vim.ui.select",
 	quickfix = {
-		auto_open = true,
-		auto_close = true,
+		auto_open = false,
+		auto_close = false,
 	},
 	preview = {
 		width = 0.6,
@@ -36,8 +36,9 @@ M.defaults = {
 		enabled = true,
 	},
 	notifications = {
-		enabled = true,
+		enabled = false,
 	},
+	verbose = true,
 }
 
 M.options = {}
