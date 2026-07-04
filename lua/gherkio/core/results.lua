@@ -1246,13 +1246,13 @@ function M.show_results(output_lines)
 		end
 	end
 
-	-- Configure clean results window layout (no numbers, signs, or wrapping)
+	-- Configure clean results window layout (no numbers, signs)
 	if win and vim.api.nvim_win_is_valid(win) then
 		vim.api.nvim_win_set_option(win, "number", false)
 		vim.api.nvim_win_set_option(win, "relativenumber", false)
 		vim.api.nvim_win_set_option(win, "signcolumn", "no")
 		vim.api.nvim_win_set_option(win, "foldcolumn", "0")
-		vim.api.nvim_win_set_option(win, "wrap", false)
+		vim.api.nvim_win_set_option(win, "wrap", true)
 	end
 
 	-- Render the view with the actual window's target width!
