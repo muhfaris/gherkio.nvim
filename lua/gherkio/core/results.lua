@@ -1371,6 +1371,7 @@ function M.show_results(output_lines)
 		vim.api.nvim_win_set_option(win, "signcolumn", "no")
 		vim.api.nvim_win_set_option(win, "foldcolumn", "0")
 		vim.api.nvim_win_set_option(win, "wrap", true)
+		vim.api.nvim_win_set_option(win, "breakindent", true)
 	end
 
 	-- Render the view with the actual window's target width!
