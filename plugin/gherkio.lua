@@ -44,6 +44,11 @@ local function route_command(opts)
     return
   end
 
+  if sub == "find" then
+    gherkio.find_tests()
+    return
+  end
+
   if sub == "run" then
     local parser = require("gherkio.core.parser")
     local bufnr = vim.api.nvim_get_current_buf()
@@ -65,7 +70,9 @@ local function route_command(opts)
       end
     end
 
-    if target == "all" then
+    if target == "project" then
+      gherkio.run_test({ project = true, dry_run = dry_run, verbose = verbose })
+    elseif target == "all" then
       gherkio.run_test({ dry_run = dry_run, verbose = verbose })
     elseif target == "section" then
       local sec = parser.detect_section(bufnr, cursor_line)
@@ -78,6 +85,19 @@ local function route_command(opts)
         return
       end
       gherkio.run_test({ until_target = string.format("%s:%d", sec, step_num), dry_run = dry_run, verbose = verbose })
+    elseif target ~= "" then
+      local project_root = require("gherkio.core.env").get_project_root()
+      local full_target_path = target
+      if project_root and not target:match("^/") then
+        if target:match("^tests/") then
+          full_target_path = project_root .. "/.gherkio/" .. target
+        elseif not target:match("^%.gherkio/") then
+          full_target_path = project_root .. "/.gherkio/tests/" .. target
+        else
+          full_target_path = project_root .. "/" .. target
+        end
+      end
+      gherkio.run_test({ file = full_target_path, dry_run = dry_run, verbose = verbose })
     else
       -- Defaults: run under cursor
       gherkio.run_test({ line = cursor_line, dry_run = dry_run, verbose = verbose })
@@ -92,7 +112,7 @@ end
 vim.api.nvim_create_user_command("Gherkio", route_command, {
   nargs = "*",
   complete = function(arg_lead, cmd_line, cursor_pos)
-    local subcmds = { "run", "preview", "copy", "paste", "stop", "health", "results" }
+    local subcmds = { "run", "find", "preview", "copy", "paste", "stop", "health", "results" }
     local args = vim.split(cmd_line, "%s+")
     
     -- Completing sub-command
@@ -108,7 +128,22 @@ vim.api.nvim_create_user_command("Gherkio", route_command, {
 
     -- Completing options inside 'run' sub-command
     if args[2] == "run" then
-      local run_choices = { "all", "section", "until", "--dry-run", "--verbose", "--no-verbose" }
+      local run_choices = { "all", "project", "section", "until", "--dry-run", "--verbose", "--no-verbose" }
+      local project_root = require("gherkio.core.env").get_project_root()
+      if project_root then
+        local search_prefix = arg_lead
+        if not search_prefix:match("^tests/") and not search_prefix:match("^%.gherkio/") then
+          search_prefix = "tests/" .. search_prefix
+        end
+        local glob_path = project_root .. "/.gherkio/" .. search_prefix .. "*"
+        local paths = vim.fn.glob(glob_path, false, true)
+        for _, p in ipairs(paths) do
+          local relative = p:sub(#project_root + 2)
+          local short = relative:match("^%.gherkio/(.+)$") or relative
+          table.insert(run_choices, short)
+        end
+      end
+
       local matches = {}
       for _, c in ipairs(run_choices) do
         if c:sub(1, #arg_lead) == arg_lead then

@@ -3,6 +3,7 @@ local M = {}
 M.defaults = {
 	keys = {
 		open_modal = "<leader>gm",
+		find_tests = "<leader>gt",
 		copy_curl = "<leader>gc",
 		paste_dsl = "<leader>gp",
 		preview_request = "<leader>gi",

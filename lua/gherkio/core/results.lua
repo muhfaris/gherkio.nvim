@@ -168,11 +168,12 @@ function M.parse_output(lines)
 		scenario = "",
 		passed = true,
 		is_dry_run = false,
-		sections = {},
+		scenarios = {},
 		summary = { passed = true, pass_count = 0, fail_count = 0, total = 0, duration = "" },
 		raw_lines = lines,
 	}
 
+	local current_scenario = nil
 	local current_section = nil
 	local current_step = nil
 	local step_counter = 0
@@ -201,26 +202,70 @@ function M.parse_output(lines)
 			goto next_line
 		end
 
-		-- Detect scenario name (first non-empty line starting with ✓ or ✗)
-		if
-			not current_step
-			and not current_section
-			and not data.scenario:match("%S")
-			and (starts_with(trimmed, "✓") or starts_with(trimmed, "✗"))
-		then
-			local is_pass = starts_with(trimmed, "✓")
-			local without_icon = trim(trimmed:sub(is_pass and #"✓" + 1 or #"✗" + 1))
-			data.scenario = without_icon:gsub("%s*%[DRY RUN%]%s*", "")
-			data.is_dry_run = without_icon:find("%[DRY RUN%]") ~= nil
-			data.passed = is_pass
-			goto next_line
+		-- Detect scenario start, completion, or global summary
+		if starts_with(cl, "✓ ") or starts_with(cl, "✗ ") then
+			if cl:match("— across") then
+				-- Global suite summary line: e.g. "✗ FAIL — across 3 scenario(s)"
+				data.summary.passed = starts_with(cl, "✓")
+				goto next_line
+			elseif cl:match("PASS%s*%(") or cl:match("FAIL%s*%(") then
+				-- Scenario completion: e.g. "✗ FAIL (Place an Order (Store POST) (alpha))"
+				if current_scenario then
+					current_scenario.completed = true
+				end
+				current_scenario = nil
+				current_section = nil
+				current_step = nil
+				step_counter = 0
+				context = nil
+				reading_body = false
+				reading_headers = false
+				goto next_line
+			else
+				-- Scenario header line: e.g. "✗ Place an Order (Store POST) (alpha)"
+				local is_pass = starts_with(cl, "✓ ")
+				local name_text = cl:match("^[^%s]+%s+(.*)")
+				if name_text then
+					current_scenario = {
+						name = name_text:gsub("%s*%[DRY RUN%]%s*", ""),
+						passed = is_pass,
+						is_dry_run = name_text:find("%[DRY RUN%]") ~= nil,
+						sections = {},
+						resolved_variables = {}
+					}
+					table.insert(data.scenarios, current_scenario)
+					if data.scenario == "" then
+						data.scenario = current_scenario.name
+						data.is_dry_run = current_scenario.is_dry_run
+					end
+					-- Reset parsing state for the new scenario
+					current_section = nil
+					current_step = nil
+					step_counter = 0
+					context = nil
+					reading_body = false
+					reading_headers = false
+					goto next_line
+				end
+			end
 		end
 
 		-- Detect section boundaries (e.g., "── Resolved Variables ──")
 		if cl:match("^──%s+([%a%s]+)%s+──$") then
 			local sec_name = cl:match("^──%s+([%a%s]+)%s+──$"):lower()
 			current_section = { name = sec_name, steps = {} }
-			table.insert(data.sections, current_section)
+			if current_scenario then
+				table.insert(current_scenario.sections, current_section)
+			else
+				-- Fallback in case scenario header was missed
+				table.insert(data.scenarios, {
+					name = "Default Scenario",
+					passed = true,
+					sections = { current_section },
+					resolved_variables = {}
+				})
+				current_scenario = data.scenarios[#data.scenarios]
+			end
 			current_step = nil
 			context = nil
 			reading_body = false
@@ -233,9 +278,7 @@ function M.parse_output(lines)
 			context = nil
 			reading_body = false
 			reading_headers = false
-			if starts_with(trimmed, "✓") or starts_with(trimmed, "✗") then
-				data.summary.passed = starts_with(trimmed, "✓")
-			elseif trimmed:match("passed") then
+			if trimmed:match("passed") then
 				local p, f, t = trimmed:match("(%d+)%s+passed,%s+(%d+)%s+failed,%s+(%d+)%s+total")
 				if p then
 					data.summary.pass_count = tonumber(p)
@@ -295,9 +338,20 @@ function M.parse_output(lines)
 				step_counter = step_num
 			end
 
+			if not current_scenario then
+				-- Fallback if no scenario header was parsed
+				table.insert(data.scenarios, {
+					name = "Default Scenario",
+					passed = true,
+					sections = {},
+					resolved_variables = {}
+				})
+				current_scenario = data.scenarios[#data.scenarios]
+			end
+
 			if not current_section or current_section.name == "resolved variables" then
 				current_section = { name = "steps", steps = {} }
-				table.insert(data.sections, current_section)
+				table.insert(current_scenario.sections, current_section)
 			end
 
 			-- Calculate status indent to strip from inner lines of this step
@@ -552,47 +606,60 @@ function M.parse_output(lines)
 		end
 
 		-- Capture resolved variables section variables
-		if current_section and current_section.name == "resolved variables" then
+		if current_scenario and current_section and current_section.name == "resolved variables" then
 			local name, val = trimmed:match("^%$(%S+)%s*→%s*(.*)")
 			if name then
-				data.resolved_variables = data.resolved_variables or {}
-				data.resolved_variables[name] = val
+				current_scenario.resolved_variables = current_scenario.resolved_variables or {}
+				current_scenario.resolved_variables[name] = val
 			end
 		end
 
 		::next_line::
 	end
 
-	-- If summary total is 0, calculate it from steps and assertions
-	if data.summary.total == 0 then
+	-- Calculate overall passed status
+	local overall_passed = true
+	for _, sc in ipairs(data.scenarios) do
+		if not sc.passed then
+			overall_passed = false
+			break
+		end
+	end
+	data.passed = overall_passed
+
+	-- If summary total is 0, calculate it from steps and assertions of all scenarios
+	-- If summary total is 0 or we have multiple scenarios, calculate it from steps and assertions of all scenarios
+	if data.summary.total == 0 or #data.scenarios > 1 then
 		local pass_count = 0
 		local fail_count = 0
 		local has_errors = false
 		local total_ms = 0
 		local any_step = false
 
-		for _, section in ipairs(data.sections) do
-			for _, step in ipairs(section.steps) do
-				any_step = true
-				local step_has_assertions = false
-				for _, ass in ipairs(step.assertions) do
-					step_has_assertions = true
-					if ass.passed then
-						pass_count = pass_count + 1
-					else
-						fail_count = fail_count + 1
+		for _, sc in ipairs(data.scenarios) do
+			for _, section in ipairs(sc.sections) do
+				for _, step in ipairs(section.steps) do
+					any_step = true
+					local step_has_assertions = false
+					for _, ass in ipairs(step.assertions) do
+						step_has_assertions = true
+						if ass.passed then
+							pass_count = pass_count + 1
+						else
+							fail_count = fail_count + 1
+						end
 					end
-				end
 
-				if not step.passed then
-					has_errors = true
-					if not step_has_assertions then
-						fail_count = fail_count + 1
+					if not step.passed then
+						has_errors = true
+						if not step_has_assertions then
+							fail_count = fail_count + 1
+						end
 					end
-				end
 
-				if step.duration and step.duration ~= "" then
-					total_ms = total_ms + parse_duration_to_ms(step.duration)
+					if step.duration and step.duration ~= "" then
+						total_ms = total_ms + parse_duration_to_ms(step.duration)
+					end
 				end
 			end
 		end
@@ -606,9 +673,7 @@ function M.parse_output(lines)
 			else
 				data.summary.passed = true
 			end
-			if total_ms > 0 and data.summary.duration == "" then
-				data.summary.duration = format_ms_duration(total_ms)
-			end
+			data.summary.duration = format_ms_duration(total_ms)
 		end
 	end
 
@@ -638,194 +703,189 @@ function M.render_view(data, tab_id, width)
 	table.insert(lines, build_top_bar(tab_id, width))
 	table.insert(lines, "")
 
-	-- 2. Scenario Header
-	local status_icon = data.passed and "✓" or "✗"
-	local scenario_title = data.scenario
-	if not scenario_title or scenario_title == "" then
-		-- Find the first step to construct a nice fallback title
-		local first_step = nil
-		for _, section in ipairs(data.sections) do
-			if section.steps and #section.steps > 0 then
-				first_step = section.steps[1]
-				break
-			end
-		end
-		if first_step then
-			scenario_title = "Single Step: " .. first_step.label
-		else
-			scenario_title = "Gherkio Run"
-		end
-	end
-	local scenario_line = string.format("  %s %s", status_icon, scenario_title)
-	if data.is_dry_run then
-		scenario_line = scenario_line .. " [DRY RUN]"
-	end
-	table.insert(lines, scenario_line)
-	table.insert(lines, "")
-
-	-- 3. Steps and Sections
+	-- 2. Scenarios and Steps
 	local rendered_any_steps = false
 
-	-- Render Resolved Variables first in Full and Summary tabs if they exist
-	if
-		(tab_id == "full" or tab_id == "summary")
-		and data.resolved_variables
-		and not vim.tbl_isempty(data.resolved_variables)
-	then
-		table.insert(lines, "  ── Resolved Variables ──")
-		for k, v in pairs(data.resolved_variables) do
-			table.insert(lines, string.format("     $%s → %s", k, v))
+	for idx, sc in ipairs(data.scenarios) do
+		if idx > 1 then
+			table.insert(lines, "")
 		end
+
+		-- Draw scenario-level divider and title
+		local border_char = "═"
+		table.insert(lines, "  " .. string.rep(border_char, width - 4))
+
+		local status_icon = sc.passed and "✓" or "✗"
+		local scenario_title = sc.name
+		local scenario_line = string.format("  %s %s", status_icon, scenario_title)
+		if sc.is_dry_run then
+			scenario_line = scenario_line .. " [DRY RUN]"
+		end
+		table.insert(lines, scenario_line)
+		table.insert(lines, "  " .. string.rep(border_char, width - 4))
 		table.insert(lines, "")
-	end
 
-	for _, section in ipairs(data.sections) do
-		if section.name == "resolved variables" then
-			goto continue_section
+		-- Render Resolved Variables inside the scenario block if they exist
+		if
+			(tab_id == "full" or tab_id == "summary")
+			and sc.resolved_variables
+			and not vim.tbl_isempty(sc.resolved_variables)
+		then
+			table.insert(lines, "  ── Resolved Variables ──")
+			for k, v in pairs(sc.resolved_variables) do
+				table.insert(lines, string.format("     $%s → %s", k, v))
+			end
+			table.insert(lines, "")
 		end
 
-		-- Filter steps based on tab
-		local steps_to_render = {}
-		for _, step in ipairs(section.steps) do
-			local include_step = false
-			if tab_id == "full" then
-				include_step = true
-			elseif tab_id == "summary" then
-				include_step = true
-			elseif tab_id == "request" then
-				include_step = (step.request and step.request.method ~= "")
-			elseif tab_id == "response" then
-				include_step = (step.response and step.response.status ~= nil)
-			elseif tab_id == "errors" then
-				include_step = not step.passed
+		for _, section in ipairs(sc.sections) do
+			if section.name == "resolved variables" then
+				goto continue_section
 			end
 
-			if include_step then
-				table.insert(steps_to_render, step)
+			-- Filter steps based on tab
+			local steps_to_render = {}
+			for _, step in ipairs(section.steps) do
+				local include_step = false
+				if tab_id == "full" then
+					include_step = true
+				elseif tab_id == "summary" then
+					include_step = true
+				elseif tab_id == "request" then
+					include_step = (step.request and step.request.method ~= "")
+				elseif tab_id == "response" then
+					include_step = (step.response and step.response.status ~= nil)
+				elseif tab_id == "errors" then
+					include_step = not step.passed
+				end
+
+				if include_step then
+					table.insert(steps_to_render, step)
+				end
 			end
+
+			if #steps_to_render > 0 then
+				rendered_any_steps = true
+
+				-- Section header (only if not the default "steps" section)
+				if section.name ~= "steps" and section.name ~= "" then
+					table.insert(lines, "  ── " .. section.name:gsub("^%l", string.upper) .. " ──")
+					table.insert(lines, "")
+				end
+
+				-- Render each step
+				for _, step in ipairs(steps_to_render) do
+					local blocks = {}
+
+					-- Build blocks based on tab_id
+					if tab_id == "full" or tab_id == "request" then
+						if step.request and step.request.method ~= "" then
+							local req_lines = {}
+							for k, v in pairs(step.request.headers) do
+								table.insert(req_lines, string.format("%s: %s", k, v))
+							end
+							if step.request.body and step.request.body ~= "" then
+								if #req_lines > 0 then
+									table.insert(req_lines, "")
+								end
+								local body_lines = prettify_json(step.request.body)
+								for _, bl in ipairs(body_lines) do
+									table.insert(req_lines, bl)
+								end
+							end
+							table.insert(blocks, {
+								type = "request",
+								title = string.format("Request: %s %s", step.request.method, step.request.url),
+								lines = req_lines,
+							})
+						end
+					end
+
+					if tab_id == "full" or tab_id == "response" or tab_id == "errors" then
+						if step.response and step.response.status ~= nil then
+							local res_lines = {}
+							for k, v in pairs(step.response.headers) do
+								table.insert(res_lines, string.format("%s: %s", k, v))
+							end
+							if step.response.body and step.response.body ~= "" then
+								if #res_lines > 0 then
+									table.insert(res_lines, "")
+								end
+								local body_lines = prettify_json(step.response.body)
+								for _, bl in ipairs(body_lines) do
+									table.insert(res_lines, bl)
+								end
+							end
+							table.insert(blocks, {
+								type = "response",
+								title = string.format("Response: %s", step.response.status),
+								lines = res_lines,
+							})
+						end
+					end
+
+					if tab_id == "full" or tab_id == "summary" or tab_id == "errors" then
+						-- Assertions
+						if step.assertions and #step.assertions > 0 then
+							local ass_lines = {}
+							for _, ass in ipairs(step.assertions) do
+								local ass_icon = ass.passed and "✓" or "✗"
+								table.insert(ass_lines, string.format("%s %s", ass_icon, ass.text))
+							end
+							table.insert(blocks, {
+								type = "assertions",
+								title = "Assertions:",
+								lines = ass_lines,
+							})
+						end
+
+						-- Saved variables
+						if step.saved and not vim.tbl_isempty(step.saved) then
+							local saved_lines = {}
+							for k, v in pairs(step.saved) do
+								table.insert(saved_lines, string.format("%s = %s", k, v))
+							end
+							table.insert(blocks, {
+								type = "saved",
+								title = "Saved Variables:",
+								lines = saved_lines,
+							})
+						end
+					end
+
+					-- Error block (always render if present)
+					if step.error and step.error ~= "" then
+						table.insert(blocks, {
+							type = "error",
+							title = string.format("Error: %s", step.error),
+							lines = {},
+						})
+					end
+
+					-- Warnings block (always render if present)
+					if step.warnings and #step.warnings > 0 then
+						local warn_lines = {}
+						for _, w in ipairs(step.warnings) do
+							table.insert(warn_lines, w)
+						end
+						table.insert(blocks, {
+							type = "warnings",
+							title = "Warnings:",
+							lines = warn_lines,
+						})
+					end
+
+					-- Render the tree for this step
+					local step_lines = render_step_tree(step, blocks)
+					for _, sl in ipairs(step_lines) do
+						table.insert(lines, sl)
+					end
+					table.insert(lines, "")
+				end
+			end
+
+			::continue_section::
 		end
-
-		if #steps_to_render > 0 then
-			rendered_any_steps = true
-
-			-- Section header (only if not the default "steps" section)
-			if section.name ~= "steps" and section.name ~= "" then
-				table.insert(lines, "  ── " .. section.name:gsub("^%l", string.upper) .. " ──")
-				table.insert(lines, "")
-			end
-
-			-- Render each step
-			for _, step in ipairs(steps_to_render) do
-				local blocks = {}
-
-				-- Build blocks based on tab_id
-				if tab_id == "full" or tab_id == "request" then
-					if step.request and step.request.method ~= "" then
-						local req_lines = {}
-						for k, v in pairs(step.request.headers) do
-							table.insert(req_lines, string.format("%s: %s", k, v))
-						end
-						if step.request.body and step.request.body ~= "" then
-							if #req_lines > 0 then
-								table.insert(req_lines, "")
-							end
-							local body_lines = prettify_json(step.request.body)
-							for _, bl in ipairs(body_lines) do
-								table.insert(req_lines, bl)
-							end
-						end
-						table.insert(blocks, {
-							type = "request",
-							title = string.format("Request: %s %s", step.request.method, step.request.url),
-							lines = req_lines,
-						})
-					end
-				end
-
-				if tab_id == "full" or tab_id == "response" or tab_id == "errors" then
-					if step.response and step.response.status ~= nil then
-						local res_lines = {}
-						for k, v in pairs(step.response.headers) do
-							table.insert(res_lines, string.format("%s: %s", k, v))
-						end
-						if step.response.body and step.response.body ~= "" then
-							if #res_lines > 0 then
-								table.insert(res_lines, "")
-							end
-							local body_lines = prettify_json(step.response.body)
-							for _, bl in ipairs(body_lines) do
-								table.insert(res_lines, bl)
-							end
-						end
-						table.insert(blocks, {
-							type = "response",
-							title = string.format("Response: %s", step.response.status),
-							lines = res_lines,
-						})
-					end
-				end
-
-				if tab_id == "full" or tab_id == "summary" or tab_id == "errors" then
-					-- Assertions
-					if step.assertions and #step.assertions > 0 then
-						local ass_lines = {}
-						for _, ass in ipairs(step.assertions) do
-							local ass_icon = ass.passed and "✓" or "✗"
-							table.insert(ass_lines, string.format("%s %s", ass_icon, ass.text))
-						end
-						table.insert(blocks, {
-							type = "assertions",
-							title = "Assertions:",
-							lines = ass_lines,
-						})
-					end
-
-					-- Saved variables
-					if step.saved and not vim.tbl_isempty(step.saved) then
-						local saved_lines = {}
-						for k, v in pairs(step.saved) do
-							table.insert(saved_lines, string.format("%s = %s", k, v))
-						end
-						table.insert(blocks, {
-							type = "saved",
-							title = "Saved Variables:",
-							lines = saved_lines,
-						})
-					end
-				end
-
-				-- Error block (always render if present)
-				if step.error and step.error ~= "" then
-					table.insert(blocks, {
-						type = "error",
-						title = string.format("Error: %s", step.error),
-						lines = {},
-					})
-				end
-
-				-- Warnings block (always render if present)
-				if step.warnings and #step.warnings > 0 then
-					local warn_lines = {}
-					for _, w in ipairs(step.warnings) do
-						table.insert(warn_lines, w)
-					end
-					table.insert(blocks, {
-						type = "warnings",
-						title = "Warnings:",
-						lines = warn_lines,
-					})
-				end
-
-				-- Render the tree for this step
-				local step_lines = render_step_tree(step, blocks)
-				for _, sl in ipairs(step_lines) do
-					table.insert(lines, sl)
-				end
-				table.insert(lines, "")
-			end
-		end
-
-		::continue_section::
 	end
 
 	if not rendered_any_steps then
@@ -876,6 +936,7 @@ local function setup_syntax(bufnr)
     syntax match GherkioBorder /^[┌└]─\+/
     syntax match GherkioBorder /─\+[┐┘]$/
     syntax match GherkioBorder /^[─ ]\+$/
+    syntax match GherkioBorder /^[═ ]\+$/
     
     " Tree lines
     syntax match GherkioTree /[│├└─]/
@@ -937,40 +998,87 @@ end
 
 -- ── Navigation ──────────────────────────────────────────────────────
 -- Finds the step number under the cursor by searching upwards
-local function get_current_step_number()
+-- Finds the step info under the cursor (step number and parent scenario title)
+local function get_current_step_info()
 	local win = vim.api.nvim_get_current_win()
 	local cursor = vim.api.nvim_win_get_cursor(win)
 	local current_line = cursor[1]
 
+	local step_num = nil
 	for l = current_line, 1, -1 do
 		local line = vim.api.nvim_buf_get_lines(0, l - 1, l, false)[1]
 		if line then
-			local step_num = line:match("^%s*(%d+)%.%s")
-			if step_num then
-				return tonumber(step_num)
+			local num = line:match("^%s*(%d+)%.%s")
+			if num then
+				step_num = tonumber(num)
+				break
 			end
 		end
 	end
-	return nil
+
+	if not step_num then
+		return nil
+	end
+
+	local scenario_title = nil
+	for l = current_line, 1, -1 do
+		local line = vim.api.nvim_buf_get_lines(0, l - 1, l, false)[1]
+		if line and line:match("^%s*═+$") then
+			if l > 1 then
+				local title_line = vim.api.nvim_buf_get_lines(0, l - 2, l - 1, false)[1]
+				if title_line then
+					local title = title_line:match("^%s*✓%s*(.-)%s*$") or title_line:match("^%s*✗%s*(.-)%s*$")
+					if title then
+						scenario_title = title:gsub("%s*%[DRY RUN%]$", "")
+						break
+					end
+				end
+			end
+		end
+	end
+
+	return {
+		step_number = step_num,
+		scenario_title = scenario_title,
+	}
 end
 
--- Focuses the cursor on the step with the given step number
-local function focus_step_number(step_num)
-	if not step_num then
+-- Focuses the cursor on the step matching the given step info
+local function focus_step_info(info)
+	if not info or not info.step_number then
 		return
 	end
 	local total_lines = vim.api.nvim_buf_line_count(0)
+	local current_scenario = nil
+
 	for l = 1, total_lines do
 		local line = vim.api.nvim_buf_get_lines(0, l - 1, l, false)[1]
-		if line and line:match("^%s*" .. step_num .. "%.%s") then
-			local win = vim.api.nvim_get_current_win()
-			vim.api.nvim_win_set_cursor(win, { l, 2 })
-			return
+		if line then
+			if line:match("^%s*═+$") then
+				if l > 1 then
+					local title_line = vim.api.nvim_buf_get_lines(0, l - 2, l - 1, false)[1]
+					if title_line then
+						local title = title_line:match("^%s*✓%s*(.-)%s*$") or title_line:match("^%s*✗%s*(.-)%s*$")
+						if title then
+							current_scenario = title:gsub("%s*%[DRY RUN%]$", "")
+						end
+					end
+				end
+			end
+
+			local num = line:match("^%s*(" .. info.step_number .. ")%.%s")
+			if num then
+				if not info.scenario_title or current_scenario == info.scenario_title then
+					local win = vim.api.nvim_get_current_win()
+					vim.api.nvim_win_set_cursor(win, { l, 2 })
+					return
+				end
+			end
 		end
 	end
 end
 
--- Jumps to the next or previous step/section header
+-- Jumps to the next or previous step/section header/scenario header
 local function jump_step(dir)
 	local win = vim.api.nvim_get_current_win()
 	local cursor = vim.api.nvim_win_get_cursor(win)
@@ -983,9 +1091,19 @@ local function jump_step(dir)
 
 	for l = start, finish, step do
 		local line = vim.api.nvim_buf_get_lines(0, l - 1, l, false)[1]
-		if line and (line:match("^%s*%d+%.%s") or line:match("^%s*──%s+.*%s+──")) then
-			vim.api.nvim_win_set_cursor(win, { l, 2 })
-			return
+		if line then
+			local is_target = false
+			if line:match("^%s*%d+%.%s") then
+				is_target = true
+			elseif line:match("^%s*──%s+.*%s+──") then
+				is_target = true
+			elseif (line:match("^%s*✓%s") or line:match("^%s*✗%s")) and not line:match("PASS") and not line:match("FAIL") then
+				is_target = true
+			end
+			if is_target then
+				vim.api.nvim_win_set_cursor(win, { l, 2 })
+				return
+			end
 		end
 	end
 end
@@ -996,7 +1114,7 @@ local function switch_tab(tab_id)
 		return
 	end
 
-	local active_step = get_current_step_number()
+	local active_step_info = get_current_step_info()
 	state.active_tab = tab_id
 
 	local current_width = 78
@@ -1020,7 +1138,7 @@ local function switch_tab(tab_id)
 	vim.api.nvim_buf_set_option(bufnr, "readonly", true)
 
 	setup_syntax(bufnr)
-	focus_step_number(active_step)
+	focus_step_info(active_step_info)
 
 	-- Update floating window title
 	local wins = vim.fn.win_findbuf(bufnr)

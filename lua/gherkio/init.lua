@@ -12,7 +12,17 @@ end
 -- Lazy functions mapped directly to internal modules
 M.run_test = function(opts)
   opts = opts or {}
-  local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
+  local bufnr = opts.bufnr
+  if not bufnr then
+    if opts.file and vim.fn.isdirectory(opts.file) == 0 then
+      bufnr = vim.fn.bufadd(opts.file)
+      vim.fn.bufload(bufnr)
+    else
+      bufnr = vim.api.nvim_get_current_buf()
+    end
+  end
+  opts.bufnr = bufnr
+
   if opts.env or opts.account then
     require("gherkio.core.runner").run_test(opts)
   else
@@ -95,6 +105,10 @@ M.run_all = function()
   M.run_test({})
 end
 
+M.find_tests = function()
+  require("gherkio.core.finder").find_tests()
+end
+
 M.run_under_cursor = function()
   local bufnr = vim.api.nvim_get_current_buf()
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
@@ -130,7 +144,7 @@ local function setup_lsp_schema(project_root)
     if settings.yaml.schemas[schema_path_normalized] ~= glob then
       settings.yaml.schemas[schema_path_normalized] = glob
       client.config.settings = settings
-      client.notify("workspace/didChangeConfiguration", { settings = settings })
+      client:notify("workspace/didChangeConfiguration", { settings = settings })
     end
   end
 
@@ -179,6 +193,13 @@ function M.setup(opts)
   -- Setup buffer-local keymaps automatically for YAML files within Gherkio projects
   local keys = config.get("keys")
   
+  -- Set up global keymaps (like find_tests)
+  if keys then
+    if keys.find_tests and keys.find_tests ~= "" then
+      vim.keymap.set("n", keys.find_tests, M.find_tests, { silent = true, desc = "Gherkio Find Tests" })
+    end
+  end
+
   local function bind_keys(bufnr)
     local name = vim.api.nvim_buf_get_name(bufnr)
     if name == "" then return end

@@ -99,28 +99,41 @@ end
 
 -- Repeat the last executed run target (automatically updates cursor line if step-level execution)
 function M.run_last()
-  if not M.last_run_opts then
-    vim.notify("No Gherkio test has been run yet in this session.", vim.log.levels.WARN)
-    return
-  end
+	if not M.last_run_opts then
+		vim.notify("No Gherkio test has been run yet in this session.", vim.log.levels.WARN)
+		return
+	end
 
-  local current_buf = vim.api.nvim_get_current_buf()
-  local project_root = env.get_project_root(current_buf)
-  if not project_root then
-    vim.notify("No Gherkio project found.", vim.log.levels.WARN)
-    return
-  end
+	local current_buf = vim.api.nvim_get_current_buf()
+	local project_root = env.get_project_root(current_buf)
+	if not project_root then
+		vim.notify("No Gherkio project found.", vim.log.levels.WARN)
+		return
+	end
 
-  local opts = vim.deepcopy(M.last_run_opts)
-  opts.bufnr = current_buf
+	local opts = vim.deepcopy(M.last_run_opts)
+	opts.bufnr = current_buf
 
-  -- If the last run was specific to a cursor line, update it to the current cursor line
-  if opts.line then
-    local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
-    opts.line = cursor_line
-  end
+	-- If the last run was specific to a cursor line, update it to the current cursor line
+	if opts.line then
+		local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
+		opts.line = cursor_line
+	end
 
-  M.run_test(opts)
+	M.run_test(opts)
+end
+
+-- Returns the last run options (read-only snapshot).
+function M.last_run_opts()
+	return M.last_run_opts_cache
+end
+
+-- Store last run opts on each invocation
+local function cache_last_run_opts(opts)
+	M.last_run_opts_cache = {
+		env = opts.env,
+		account = opts.account,
+	}
 end
 
 -- Asynchronous test runner mapping failures to quickfix
@@ -128,20 +141,29 @@ function M.run_test(opts)
   -- Cache the last executed test options for repeating
   M.last_run_opts = opts
 
-  local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
+  local bufnr = opts.bufnr
+  if not bufnr then
+    if opts.file then
+      bufnr = vim.fn.bufadd(opts.file)
+      vim.fn.bufload(bufnr)
+    else
+      bufnr = vim.api.nvim_get_current_buf()
+    end
+  end
+
   local project_root = env.get_project_root(bufnr)
   if not project_root then
     vim.notify("No Gherkio project found. Run `gherkio init` first.", vim.log.levels.WARN)
     return
   end
 
-  -- Silently save buffer if modified
+	-- Cache last run env/account for finder reuse on every invocation
+	cache_last_run_opts(opts)
+
+	-- Silently save buffer if modified
   if vim.bo[bufnr].modified then
     vim.cmd("silent write")
   end
-
-  local full_path = vim.api.nvim_buf_get_name(bufnr)
-  local relative_path = full_path:sub(#project_root + 2)
 
   -- Terminate any previous running job
   if M.active_job then
@@ -151,7 +173,24 @@ function M.run_test(opts)
   -- Clear old gutter signs from previous run
   clear_signs(bufnr)
 
-  local cmd = { "gherkio", "run", relative_path }
+	local cmd = { "gherkio", "run" }
+
+	-- Use explicit file path if provided, otherwise derive from buffer
+  local relative_path
+  if not opts.project then
+    if opts.file then
+      relative_path = opts.file:sub(#project_root + 2)
+    else
+      local full_path = vim.api.nvim_buf_get_name(bufnr)
+      relative_path = full_path:sub(#project_root + 2)
+    end
+    if relative_path and relative_path ~= "" then
+      if relative_path:sub(-1) == "/" or relative_path:sub(-1) == "\\" then
+        relative_path = relative_path:sub(1, -2)
+      end
+      table.insert(cmd, relative_path)
+    end
+  end
 
   if opts.env and opts.env ~= "" then
     table.insert(cmd, "--env")
