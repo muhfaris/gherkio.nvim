@@ -65,7 +65,7 @@ local function format_ms_duration(ms)
 end
 
 -- Prettifies a JSON string, trims common leading indentation, and returns a list of lines
-local function prettify_json(body_str)
+local function prettify_json(body_str, width)
 	if not body_str or body_str == "" then
 		return {}
 	end
@@ -94,7 +94,92 @@ local function prettify_json(body_str)
 		end
 	end
 
-	return lines
+	if not width or width < 40 then
+		width = 78
+	end
+	-- Leave 10 characters margin for tree lines: e.g. "     │  " (8 chars) + safety buffer
+	local limit = width - 10
+	if limit < 30 then
+		limit = 30
+	end
+
+	local wrapped_lines = {}
+	for _, line in ipairs(lines) do
+		if #line <= limit then
+			table.insert(wrapped_lines, line)
+		else
+			-- Try to detect JSON key-value pattern: e.g., '      "name": "value' or '      "name": value'
+			local indent, key_prefix, rest = line:match("^(%s*)(%b\"\"%s*:%s*\"?)(.*)$")
+			if not indent then
+				-- Fallback if key is not quoted or quotes are different
+				indent, key_prefix, rest = line:match("^(%s*)([^:]+%s*:%s*\"?)(.*)$")
+			end
+
+			local cont_prefix
+			local indent_len = 0
+			if indent and key_prefix and rest then
+				indent_len = #indent
+				cont_prefix = string.rep(" ", #indent + #key_prefix)
+			else
+				indent = line:match("^(%s*)") or ""
+				indent_len = #indent
+				local extra_indent = "    " -- 4 extra spaces for continuation lines
+				cont_prefix = indent .. extra_indent
+				rest = line
+			end
+
+			local current_prefix = ""
+
+			while #rest > 0 do
+				local max_len = limit - #current_prefix
+				if max_len < 10 then
+					max_len = 10
+				end
+
+				if #rest <= max_len then
+					if current_prefix == "" then
+						table.insert(wrapped_lines, indent .. key_prefix .. rest)
+					else
+						table.insert(wrapped_lines, current_prefix .. rest)
+					end
+					break
+				end
+
+				local chunk = rest:sub(1, max_len)
+				local last_space = nil
+				for i = max_len, 1, -1 do
+					local char = chunk:sub(i, i)
+					if char == " " or char == "\t" then
+						last_space = i
+						break
+					end
+				end
+
+				local cut_idx
+				if last_space and last_space > 1 then
+					cut_idx = last_space
+				else
+					cut_idx = max_len
+				end
+
+				local part = rest:sub(1, cut_idx)
+				if current_prefix == "" then
+					table.insert(wrapped_lines, indent .. key_prefix .. part)
+				else
+					table.insert(wrapped_lines, current_prefix .. part)
+				end
+
+				rest = rest:sub(cut_idx + 1)
+				if rest:sub(1, 1) == " " then
+					rest = rest:sub(2)
+				end
+
+				current_prefix = cont_prefix
+			end
+		end
+	end
+
+	return wrapped_lines
 end
 
 -- Builds a gorgeous top border bar with the active tab highlighted
@@ -788,7 +873,7 @@ function M.render_view(data, tab_id, width)
 								if #req_lines > 0 then
 									table.insert(req_lines, "")
 								end
-								local body_lines = prettify_json(step.request.body)
+								local body_lines = prettify_json(step.request.body, width)
 								for _, bl in ipairs(body_lines) do
 									table.insert(req_lines, bl)
 								end
@@ -811,7 +896,7 @@ function M.render_view(data, tab_id, width)
 								if #res_lines > 0 then
 									table.insert(res_lines, "")
 								end
-								local body_lines = prettify_json(step.response.body)
+								local body_lines = prettify_json(step.response.body, width)
 								for _, bl in ipairs(body_lines) do
 									table.insert(res_lines, bl)
 								end
