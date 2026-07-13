@@ -101,6 +101,36 @@ M.reopen_results = function()
   require("gherkio.core.results").reopen_results()
 end
 
+M.open_report = function()
+  local env = require("gherkio.core.env")
+  local project_root = env.get_project_root()
+  if not project_root then
+    vim.notify("No Gherkio project root detected.", vim.log.levels.WARN)
+    return
+  end
+
+  local report_path = project_root .. "/.gherkio/reports/latest/report.html"
+  if vim.fn.filereadable(report_path) == 0 then
+    vim.notify("No Gherkio HTML report found at: " .. report_path .. "\nRun a test first to generate a report.", vim.log.levels.WARN)
+    return
+  end
+
+  local function open_in_browser(path)
+    if vim.ui and vim.ui.open then
+      vim.ui.open(path)
+    elseif vim.fn.has("mac") == 1 then
+      vim.fn.system({ "open", path })
+    elseif vim.fn.has("win32") == 1 then
+      vim.fn.system({ "cmd.exe", "/c", "start", '""', path })
+    else
+      vim.fn.system({ "xdg-open", path })
+    end
+  end
+
+  open_in_browser(report_path)
+  vim.notify("Opening Gherkio HTML report in browser...", vim.log.levels.INFO)
+end
+
 M.run_all = function()
   M.run_test({})
 end
@@ -240,6 +270,9 @@ function M.setup(opts)
         end
         if keys.switch_account and keys.switch_account ~= "" then
           vim.keymap.set("n", keys.switch_account, M.switch_account, { buffer = bufnr, silent = true, desc = "Gherkio Switch Account" })
+        end
+        if keys.open_report and keys.open_report ~= "" then
+          vim.keymap.set("n", keys.open_report, M.open_report, { buffer = bufnr, silent = true, desc = "Gherkio Open HTML Report" })
         end
       end
     end

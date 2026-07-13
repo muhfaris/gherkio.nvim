@@ -91,6 +91,7 @@ require("gherkio").setup({
   -- Custom mappings registered inside Gherkio test buffers
   keys = {
     open_modal        = "<leader>gm", -- Opens the cascading interactive selector menu
+    find_tests        = "<leader>gt", -- Fuzzy find test or schema files (global keymap)
     copy_curl         = "<leader>gc", -- Converts current step under cursor to cURL (copies to clipboard)
     paste_dsl         = "<leader>gp", -- Parses clipboard cURL into Gherkio DSL
     preview_request   = "<leader>gi", -- Inspects/previews current step in cURL format without copying or running
@@ -99,6 +100,7 @@ require("gherkio").setup({
     run_all           = "<leader>ga", -- Run the full scenario (all steps)
     switch_env        = "<leader>ge", -- Switch active environment
     switch_account    = "<leader>gk", -- Switch active account
+    open_report       = "<leader>go", -- Open latest HTML report in default web browser
   }
 })
 ```
@@ -121,20 +123,24 @@ The plugin exposes the `:Gherkio` user command, which includes tab autocomplete 
 | `:Gherkio paste` | Convert the clipboard cURL command to YAML DSL and paste it under the cursor. |
 | `:Gherkio stop` | Cancel any active background Gherkio execution job. |
 | `:Gherkio health` | Verify plugin dependencies and path validations using `:checkhealth gherkio`. |
+| `:Gherkio results` | Reopen the results window of the last run. |
+| `:Gherkio report` | Open the latest HTML report in your default browser. |
 
-### Keymaps (buffer-local to YAML files)
+### Keymaps (buffer-local to YAML files, except `find_tests` which is global)
 
 | Key | Action |
 | :--- | :--- |
-| `<leader>g` | Open the interactive action modal |
-| `<leader>r` | Run the test step under the cursor immediately |
+| `<leader>gm` | Open the interactive action modal |
+| `<leader>gt` | Find test or schema files (Telescope picker) |
+| `<leader>gr` | Run the test step under the cursor immediately |
 | `<leader>ga` | Run the full scenario (all steps) |
 | `<leader>ge` | Switch active environment |
 | `<leader>gk` | Switch active account |
 | `<leader>gc` | Copy current step as cURL command |
 | `<leader>gp` | Paste cURL from clipboard as DSL |
 | `<leader>gi` | Preview current step as cURL in floating window |
-| `<leader>gr` | Repeat the last test run |
+| `<leader>gl` | Repeat the last test run |
+| `<leader>go` | Open the latest HTML report in your default browser |
 
 All keymaps are configurable via `config.keys`.
 

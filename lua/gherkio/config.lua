@@ -12,6 +12,7 @@ M.defaults = {
 		run_under_cursor = "<leader>gr",
 		switch_env = "<leader>ge",
 		switch_account = "<leader>gk",
+		open_report = "<leader>go",
 	},
 	picker = "vim.ui.select",
 	quickfix = {
@@ -27,7 +28,7 @@ M.defaults = {
 	results_window = {
 		auto_open = true,
 		layout = "vsplit", -- "float" | "vsplit" | "split"
-		width = 0.35, -- percentage of screen for vsplit, or float
+		width = 0.40, -- percentage of screen for vsplit, or float
 		height = 0.3, -- percentage of screen for split, or float
 		border = "rounded",
 	},
