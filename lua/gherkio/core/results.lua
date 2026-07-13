@@ -1273,6 +1273,7 @@ local function toggle_help()
 		"",
 		"  Controls:",
 		"    ? : Toggle this help menu",
+		"    o : Open report in browser",
 		"    q : Close results window",
 		"  Esc : Close results window",
 	}
@@ -1355,7 +1356,7 @@ function M.show_results(output_lines)
 		or {
 			auto_open = true,
 			layout = "vsplit",
-			width = 0.35,
+			width = 0.40,
 			height = 0.3,
 			border = "rounded",
 		}
@@ -1398,7 +1399,7 @@ function M.show_results(output_lines)
 			win = vim.api.nvim_get_current_win()
 			vim.api.nvim_win_set_buf(win, bufnr)
 		end
-		target_width = math.floor(vim.o.columns * (win_cfg.width or 0.35))
+		target_width = math.floor(vim.o.columns * (win_cfg.width or 0.40))
 		if target_width < 40 then
 			target_width = 40
 		end
@@ -1419,7 +1420,7 @@ function M.show_results(output_lines)
 	else -- float
 		local total_cols = vim.o.columns
 		local total_lines = vim.o.lines
-		local width_ratio = win_cfg.width == 0.35 and 0.8 or (win_cfg.width or 0.8)
+		local width_ratio = win_cfg.width == 0.40 and 0.8 or (win_cfg.width or 0.8)
 		local height_ratio = win_cfg.height == 0.3 and 0.6 or (win_cfg.height or 0.6)
 		target_width = math.floor(total_cols * width_ratio)
 		local height = math.floor(total_lines * height_ratio)
@@ -1503,6 +1504,13 @@ function M.show_results(output_lines)
 		{ buffer = bufnr, silent = true, nowait = true, desc = "Toggle Gherkio Keybindings Help" }
 	)
 
+	vim.keymap.set("n", "o", function()
+		local init = require("gherkio")
+		if init.open_report then
+			init.open_report()
+		end
+	end, { buffer = bufnr, silent = true, desc = "Open Gherkio HTML Report in Browser" })
+
 	vim.keymap.set("n", "q", close, { buffer = bufnr, silent = true, nowait = true })
 	vim.keymap.set("n", "<Esc>", close, { buffer = bufnr, silent = true, nowait = true })
 	if layout == "float" then
@@ -1580,7 +1588,7 @@ function M.show_streaming(target)
 		vim.api.nvim_buf_set_option(streaming_bufnr, "swapfile", false)
 	end
 
-	local win_cfg = config.get("results_window") or { layout = "vsplit", width = 0.35, border = "rounded" }
+	local win_cfg = config.get("results_window") or { layout = "vsplit", width = 0.40, border = "rounded" }
 	local layout = win_cfg.layout or "vsplit"
 
 	-- Show or reuse window
@@ -1605,7 +1613,7 @@ function M.show_streaming(target)
 	vim.api.nvim_buf_set_option(streaming_bufnr, "readonly", false)
 	vim.api.nvim_buf_set_lines(streaming_bufnr, 0, -1, false, lines)
 
-	local target_width = math.floor(vim.o.columns * (win_cfg.width or 0.35))
+	local target_width = math.floor(vim.o.columns * (win_cfg.width or 0.40))
 	if target_width < 40 then
 		target_width = 40
 	end
@@ -1631,7 +1639,7 @@ function M.show_streaming(target)
 	else -- float
 		local total_cols = vim.o.columns
 		local total_lines = vim.o.lines
-		local width = math.floor(total_cols * (win_cfg.width or 0.35))
+		local width = math.floor(total_cols * (win_cfg.width or 0.40))
 		if width < 50 then
 			width = 50
 		end

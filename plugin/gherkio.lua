@@ -44,6 +44,11 @@ local function route_command(opts)
     return
   end
 
+  if sub == "report" then
+    gherkio.open_report()
+    return
+  end
+
   if sub == "find" then
     gherkio.find_tests()
     return
@@ -112,7 +117,7 @@ end
 vim.api.nvim_create_user_command("Gherkio", route_command, {
   nargs = "*",
   complete = function(arg_lead, cmd_line, cursor_pos)
-    local subcmds = { "run", "find", "preview", "copy", "paste", "stop", "health", "results" }
+    local subcmds = { "run", "find", "preview", "copy", "paste", "stop", "health", "results", "report" }
     local args = vim.split(cmd_line, "%s+")
     
     -- Completing sub-command
