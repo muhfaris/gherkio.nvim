@@ -58,13 +58,20 @@ function M.get_steps_in_section(bufnr, section)
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, bound.start_line + 1, bound.end_line + 1, false)
   local step_lines = {}
+  local section_indent = nil
 
   for i, line in ipairs(lines) do
     local absolute_line = bound.start_line + i -- 0-indexed
     local trimmed = line:gsub("^%s+", "")
     -- Step begins with a list item dash: e.g. "- request:" or "- use:"
     if trimmed:match("^-%s+") and not line:match("^%s*#") then
-      table.insert(step_lines, absolute_line)
+      local indent = line:match("^(%s*)-")
+      if not section_indent then
+        section_indent = indent
+      end
+      if indent == section_indent then
+        table.insert(step_lines, absolute_line)
+      end
     end
   end
 

@@ -120,9 +120,10 @@ local function prettify_json(body_str, width)
 			if indent and key_prefix and rest then
 				indent_len = #indent
 				cont_prefix = string.rep(" ", #indent + #key_prefix)
-			else
+		else
 				indent = line:match("^(%s*)") or ""
 				indent_len = #indent
+				key_prefix = ""
 				local extra_indent = "    " -- 4 extra spaces for continuation lines
 				cont_prefix = indent .. extra_indent
 				rest = line
