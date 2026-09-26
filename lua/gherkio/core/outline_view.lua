@@ -112,9 +112,10 @@ function M.open(opts)
 
 	local lines = render_lines(data, src_path)
 
-	if not outline_buf or not vim.api.nvim_buf_is_valid(outline_buf) then
+if not outline_buf or not vim.api.nvim_buf_is_valid(outline_buf) then
 		outline_buf = vim.api.nvim_create_buf(false, true)
 	end
+	vim.api.nvim_buf_set_option(outline_buf, "modifiable", true)
 	vim.api.nvim_buf_set_lines(outline_buf, 0, -1, false, lines)
 	vim.api.nvim_buf_set_option(outline_buf, "bufhidden", "hide")
 	vim.api.nvim_buf_set_option(outline_buf, "buftype", "nofile")
