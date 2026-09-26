@@ -13,8 +13,10 @@ M.defaults = {
 		switch_env = "<leader>ge",
 		switch_account = "<leader>gk",
 		open_report = "<leader>go",
+		extract_step = "<leader>gx",
+		goto_definition = "gd",
 	},
-	picker = "vim.ui.select",
+	picker = "auto", -- "auto" | "snacks" | "fzf" | "telescope" | "builtin" | custom function(items, opts, on_choice)
 	quickfix = {
 		auto_open = false,
 		auto_close = false,
@@ -31,6 +33,8 @@ M.defaults = {
 		width = 0.40, -- percentage of screen for vsplit, or float
 		height = 0.3, -- percentage of screen for split, or float
 		border = "rounded",
+		max_body_lines = 200, -- body lines rendered before an inline <CR> expand marker
+		focus_on_open = false, -- keep cursor in the test buffer when results open
 	},
 	default_env = "",
 	default_account = "",
@@ -38,7 +42,7 @@ M.defaults = {
 		enabled = true,
 	},
 	notifications = {
-		enabled = false,
+		enabled = true, -- completion notification only (no per-step progress spam)
 	},
 	verbose = true,
 }

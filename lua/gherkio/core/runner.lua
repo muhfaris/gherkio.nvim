@@ -44,37 +44,34 @@ local function run_command_async(cmd, on_exit, on_stdout)
   end
 end
 
--- Define gutter signs for inline pass/fail feedback
-local signs_defined = false
-local function ensure_signs()
-  if not signs_defined then
-    signs_defined = true
-    vim.fn.sign_define("GherkioPass", { text = "✔", texthl = "String" })
-    vim.fn.sign_define("GherkioFail", { text = "✗", texthl = "ErrorMsg" })
-  end
-end
+-- Extmark namespace for inline pass/fail feedback on step lines
+local ns_signs = vim.api.nvim_create_namespace("gherkio_step_status")
 
--- Clear all Gherkio signs from a buffer
+-- Clear step-status extmarks from a buffer
 local function clear_signs(bufnr)
-  vim.fn.sign_unplace("gherkio", { buffer = bufnr })
+	pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_signs, 0, -1)
 end
 
--- Place pass/fail signs on step lines
+-- Place extmark virtual text at step lines: show duration for pass, fail for failure
 local function place_signs(bufnr, step_results)
-  ensure_signs()
-  clear_signs(bufnr)
-  for key, passed in pairs(step_results) do
-    local section, step_idx = key:match("^(.*):(-?%d+)$")
-    if section and step_idx then
-      step_idx = tonumber(step_idx)
-      local steps = parser.get_steps_in_section(bufnr, section)
-      if steps and steps[step_idx + 1] then
-        local line = steps[step_idx + 1] + 1 -- 1-indexed
-        local sign_name = passed and "GherkioPass" or "GherkioFail"
-        vim.fn.sign_place(0, "gherkio", sign_name, bufnr, { lnum = line })
-      end
-    end
-  end
+	clear_signs(bufnr)
+	for key, passed in pairs(step_results) do
+		local section, step_idx = key:match("^(.*):(-?%d+)$")
+		if section and step_idx then
+			step_idx = tonumber(step_idx)
+			local steps = parser.get_steps_in_section(bufnr, section)
+			if steps and steps[step_idx + 1] then
+				local line = steps[step_idx + 1] -- 0-indexed
+				local virt = passed and { { "✔" , "GherkioPass" } } or { { "✗ fail", "GherkioFail" } }
+				pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_signs, line, 0, {
+					virt_text = virt,
+					virt_text_pos = "eol",
+					hl_mode = "combine",
+					priority = 100,
+				})
+			end
+		end
+	end
 end
 
 -- Extract assertion path from error message like "body.statusCode: expected 200, got 400"
@@ -230,6 +227,16 @@ function M.run_test(opts)
     table.insert(cmd, opts.until_target)
   end
 
+  -- Run metadata for the results window header (timestamp + run target)
+  local run_meta = {
+    started_at = os.date("%H:%M:%S"),
+  }
+
+  -- Generation counter: prevents a killed/previous job's finalize callback from
+  -- overwriting the results of a newer run.
+  M.run_generation = (M.run_generation or 0) + 1
+  local my_generation = M.run_generation
+
   -- Status update notification
   local display_target = "Scenario"
   if opts.line then
@@ -243,20 +250,11 @@ function M.run_test(opts)
     display_target = "Until '" .. opts.until_target .. "'"
   end
 
-  local notif_cfg = config.get("notifications")
-  local show_notif = true
-  if notif_cfg == false then
-    show_notif = false
-  elseif type(notif_cfg) == "table" and notif_cfg.enabled == false then
-    show_notif = false
-  end
+  run_meta.target = display_target .. (relative_path and ("  ·  " .. relative_path) or "")
 
-  local progress_notif = nil
-  local total_steps = nil
-  local completed_steps = 0
-  if show_notif then
-    progress_notif = vim.notify(string.format("Running Gherkio %s...", display_target), vim.log.levels.INFO, { title = "Gherkio" })
-  end
+  -- Per plan (3.3): no run-start/step progress notifications; only a single
+  -- completion notification fires in process_run_results. The streaming
+  -- window provides in-place progress.
 
   local output = {}
 
@@ -266,37 +264,25 @@ function M.run_test(opts)
 
   M.active_job = run_command_async(cmd, vim.schedule_wrap(function(obj)
     M.active_job = nil
+    -- Stale-run guard: a killed/previous job must not overwrite newer results
+    if my_generation ~= M.run_generation then
+      return
+    end
     local passed = obj.code == 0
 
-    if progress_notif then
-      vim.notify("", vim.log.levels.INFO, { title = "Gherkio", hide = true })
-    end
-
-    M.process_run_results(bufnr, relative_path, passed, output)
+    M.process_run_results(bufnr, relative_path, passed, output, run_meta)
   end), vim.schedule_wrap(function(err, data)
     if data then
       for line in data:gmatch("[^\r\n]+") do
         table.insert(output, line)
         results_mod.append_streaming_line(line)
-        -- Track progress: detect step headers like "1. POST /login"
-        local clean = line:gsub("%[%d+m", "")
-        local step_num = clean:match("^(%d+)%.%s")
-        if step_num then
-          completed_steps = tonumber(step_num)
-          if not total_steps or completed_steps > total_steps then
-            total_steps = completed_steps
-          end
-          if progress_notif and total_steps then
-            progress_notif = vim.notify(string.format("Executing step %d/%d...", completed_steps, total_steps), vim.log.levels.INFO, { title = "Gherkio", replace = progress_notif })
-          end
-        end
       end
     end
   end))
 end
 
 -- Process run results to extract failures and build quickfix entries
-function M.process_run_results(bufnr, filepath, passed, output)
+function M.process_run_results(bufnr, filepath, passed, output, run_meta)
   local is_single_step = false
   local target_section = nil
   local target_step_idx = nil
@@ -404,7 +390,7 @@ function M.process_run_results(bufnr, filepath, passed, output)
 
   local win_cfg = config.get("results_window") or { auto_open = true }
   if win_cfg.auto_open then
-    require("gherkio.core.results").finalize_streaming(output)
+    require("gherkio.core.results").finalize_streaming(output, run_meta)
   end
 
   local notif_cfg = config.get("notifications")

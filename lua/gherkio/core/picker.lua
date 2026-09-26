@@ -14,17 +14,9 @@ local last_env = nil
 local last_account = nil
 
 -- Wrapper around picker backend configured by the user
+local pickers = require("gherkio.core.pickers")
 local function ui_select(items, opts, on_choice)
-  local picker = config.get("picker")
-  if type(picker) == "function" then
-    local ok, err = pcall(picker, items, opts, on_choice)
-    if not ok then
-      -- Fall back to vim.ui.select if custom picker fails
-      vim.ui.select(items, opts, on_choice)
-    end
-  else
-    vim.ui.select(items, opts, on_choice)
-  end
+	pickers.select(items, opts, on_choice)
 end
 
 -- Cascades picker selections for env, accounts, and actions

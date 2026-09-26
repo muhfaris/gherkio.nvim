@@ -5,17 +5,145 @@ local config = require("gherkio.config")
 
 local M = {}
 
--- ── State ──────────────────────────────────────────────────────────
-local state = nil -- nil | { data, active_tab, bufnr }
-
--- Tab definitions
+-- Tab definitions (3-tab design)
 local TABS = {
-	{ key = "1", name = "Full", id = "full" },
-	{ key = "2", name = "Sum", id = "summary" },
-	{ key = "3", name = "Req", id = "request" },
-	{ key = "4", name = "Res", id = "response" },
-	{ key = "5", name = "Err", id = "errors" },
+	{ key = "1", name = "All", id = "all" },
+	{ key = "2", name = "Bodies", id = "bodies" },
+	{ key = "3", name = "Failures", id = "failures" },
 }
+
+-- Map legacy tab ids to the new 3-tab design so previously cached state does not break
+local TAB_ID_LEGACY = {
+	full = "all",
+	summary = "all",
+	request = "bodies",
+	response = "bodies",
+	errors = "failures",
+}
+local function normalize_tab_id(id)
+	return TAB_ID_LEGACY[id] or id
+end
+
+-- ── State ──────────────────────────────────────────────────────────
+local state = nil -- nil | { data, active_tab, bufnr, run_meta, expanded = set, line_map = table }
+
+-- Default cap on rendered body lines before an expand marker is shown
+local DEFAULT_MAX_BODY_LINES = 200
+
+-- Forward declaration so helpers above can re-render via switch_tab
+local switch_tab
+local prettify_json  -- forward declaration (defined below prettify helpers)
+
+-- ── Body expand/collapse helpers ──────────────────────────────────
+
+-- Stable id for a single body block within the parsed data — used to remember
+-- which bodies the user expanded
+local function body_id(sc_idx, sec_idx, step_idx, block_type)
+	return table.concat({ sc_idx, sec_idx, step_idx, block_type }, ":")
+end
+
+-- Read the configurable render cap for body lines
+local function body_max_lines()
+	local rc = config.get("results_window") or {}
+	local n = tonumber(rc.max_body_lines) or DEFAULT_MAX_BODY_LINES
+	return n < 10 and 10 or n
+end
+
+-- Append (possibly clamped) body lines into `into_table`.
+-- When clamped, appends an expand marker line embedding the body id so <CR>
+-- can resolve which body to expand/collapse without needing a separate map.
+local function add_body_lines_scoped(body_str, width, into_table, bid)
+	local is_expanded = state and state.expanded and state.expanded[bid] or false
+	local all = prettify_json(body_str, width)
+	local max = body_max_lines()
+
+	local emitted = {}
+	if not is_expanded and #all > max then
+		for i = 1, max do
+			table.insert(emitted, all[i])
+		end
+		table.insert(emitted, string.format("« %d more lines — <CR> to expand inline »  (id:%s)", #all - max, bid))
+	else
+		for _, l in ipairs(all) do
+			table.insert(emitted, l)
+		end
+	end
+
+	for _, l in ipairs(emitted) do
+		table.insert(into_table, l)
+	end
+end
+
+local function parse_expand_marker(text)
+	return text:match("« %d+ more lines — <CR> to expand inline »%s*%(id:([%w:%-_]+)%)")
+end
+
+-- Expand the body whose marker is nearest at-or-above the cursor (searching
+-- within the same block), or the body containing the current line.
+local function bid_under_cursor()
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local l = cursor[1]
+	local bufnr = vim.api.nvim_get_current_buf()
+	local function bid_at(lnum)
+		local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1]
+		if not line then return nil end
+		return parse_expand_marker(line)
+	end
+	-- direct hit?
+	local bid = bid_at(l)
+	if bid then return bid end
+	-- search upward while inside the same block (stop at treeline connectors that end a block)
+	for i = l, 1, -1 do
+		bid = bid_at(i)
+		if bid then return bid end
+	end
+	return nil
+end
+
+local function expand_body_under_cursor()
+	if not state or not state.data then return end
+	local bid = bid_under_cursor()
+	if not bid then
+		vim.notify("No collapsed body under cursor", vim.log.levels.WARN)
+		return
+	end
+	state.expanded[bid] = true
+	switch_tab(state.active_tab)
+end
+
+local function collapse_body_under_cursor()
+	if not state or not state.data then return end
+	local bid = bid_under_cursor()
+	if not bid then
+		vim.notify("No body block under cursor to collapse", vim.log.levels.WARN)
+		return
+	end
+	state.expanded[bid] = nil
+	switch_tab(state.active_tab)
+end
+
+-- <CR> behaviour: toggle expand/collapse on clamped/expanded body under cursor
+local function toggle_body_under_cursor()
+	if not state or not state.data then return end
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local l = cursor[1]
+	local bufnr = vim.api.nvim_get_current_buf()
+	local line = vim.api.nvim_buf_get_lines(bufnr, l - 1, l, false)[1] or ""
+	local bid = parse_expand_marker(line)
+	if bid then
+		state.expanded[bid] = true
+		switch_tab(state.active_tab)
+		return
+	end
+	-- Collapsing an expanded body: find the block containing cursor and toggle it off
+	bid = bid_under_cursor()
+	if bid and state.expanded[bid] then
+		state.expanded[bid] = nil
+		switch_tab(state.active_tab)
+		return
+	end
+	-- Do nothing (no body context)
+end
 
 -- ── Helpers ─────────────────────────────────────────────────────────
 local function trim(s)
@@ -65,7 +193,7 @@ local function format_ms_duration(ms)
 end
 
 -- Prettifies a JSON string, trims common leading indentation, and returns a list of lines
-local function prettify_json(body_str, width)
+function prettify_json(body_str, width)
 	if not body_str or body_str == "" then
 		return {}
 	end
@@ -181,6 +309,46 @@ local function prettify_json(body_str, width)
 	end
 
 	return wrapped_lines
+end
+
+
+-- Renders header lines as "k: v" pairs in deterministic sorted key order
+local function add_sorted_headers(headers, into_table)
+	local keys = {}
+	for k in pairs(headers) do
+		table.insert(keys, k)
+	end
+	table.sort(keys)
+	for _, k in ipairs(keys) do
+		table.insert(into_table, string.format("%s: %s", k, headers[k]))
+	end
+end
+
+-- Formats a byte count for the response meta line
+local function approx_bytes(body_str)
+	local n = #body_str or 0
+	if n < 1000 then
+		return string.format("%dB", n)
+	elseif n < 1024 * 1024 then
+		return string.format("%.1fKB", n / 1024)
+	end
+	return string.format("%.1fMB", n / (1024 * 1024))
+end
+local BODY_MAX_LINES = 30
+-- Legacy helper retained for backward compatibility; superseded by
+-- add_body_lines_scoped (inline expand/collapse). Not referenced internally.
+local function add_body_lines(body_str, width, into_table)
+	local all = prettify_json(body_str, width)
+	if #all <= BODY_MAX_LINES then
+		for _, l in ipairs(all) do
+			table.insert(into_table, l)
+		end
+		return
+	end
+	for i = 1, BODY_MAX_LINES do
+		table.insert(into_table, all[i])
+	end
+	table.insert(into_table, string.format("… %d more lines (press r to inspect)", #all - BODY_MAX_LINES))
 end
 
 -- Builds a gorgeous top border bar with the active tab highlighted
@@ -768,7 +936,8 @@ end
 
 -- ── Renderer ────────────────────────────────────────────────────────
 -- Generates buffer lines from parsed data for a given tab view.
-function M.render_view(data, tab_id, width)
+function M.render_view(data, tab_id, width, run_meta)
+	tab_id = normalize_tab_id(tab_id)
 	if not width then
 		local bufnr = state and state.bufnr
 		if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
@@ -788,6 +957,9 @@ function M.render_view(data, tab_id, width)
 	-- 1. Top border with active/inactive tabs
 	table.insert(lines, build_top_bar(tab_id, width))
 	table.insert(lines, "")
+	if run_meta then
+		table.insert(lines, string.format("  ▶ Run %s — %s", run_meta.started_at or "", run_meta.target or ""))
+	end
 
 	-- 2. Scenarios and Steps
 	local rendered_any_steps = false
@@ -813,7 +985,7 @@ function M.render_view(data, tab_id, width)
 
 		-- Render Resolved Variables inside the scenario block if they exist
 		if
-			(tab_id == "full" or tab_id == "summary")
+			(tab_id == "all")
 			and sc.resolved_variables
 			and not vim.tbl_isempty(sc.resolved_variables)
 		then
@@ -829,19 +1001,17 @@ function M.render_view(data, tab_id, width)
 				goto continue_section
 			end
 
-			-- Filter steps based on tab
+			-- Filter steps based on tab (3-tab design)
 			local steps_to_render = {}
 			for _, step in ipairs(section.steps) do
 				local include_step = false
-				if tab_id == "full" then
+				if tab_id == "all" then
 					include_step = true
-				elseif tab_id == "summary" then
-					include_step = true
-				elseif tab_id == "request" then
+				elseif tab_id == "bodies" then
+					-- Show only steps that have wire-traffic blocks
 					include_step = (step.request and step.request.method ~= "")
-				elseif tab_id == "response" then
-					include_step = (step.response and step.response.status ~= nil)
-				elseif tab_id == "errors" then
+						or (step.response and step.response.status ~= nil)
+				elseif tab_id == "failures" then
 					include_step = not step.passed
 				end
 
@@ -863,54 +1033,67 @@ function M.render_view(data, tab_id, width)
 				for _, step in ipairs(steps_to_render) do
 					local blocks = {}
 
+					-- Body ids keyed to parse structure for inline expand/collapse
+					local sc_idx = idx
+					local sec_idx = 0
+					for si, sec in ipairs(sc.sections) do
+						if sec == section then
+							sec_idx = si
+							break
+						end
+					end
+					local st_idx = 0
+					for sti, stp in ipairs(section.steps) do
+						if stp == step then
+							st_idx = sti
+							break
+						end
+					end
+
 					-- Build blocks based on tab_id
-					if tab_id == "full" or tab_id == "request" then
+					if tab_id == "all" or tab_id == "bodies" then
 						if step.request and step.request.method ~= "" then
 							local req_lines = {}
-							for k, v in pairs(step.request.headers) do
-								table.insert(req_lines, string.format("%s: %s", k, v))
-							end
+							local bid = body_id(sc_idx, sec_idx, st_idx, "request")
+							add_sorted_headers(step.request.headers, req_lines)
 							if step.request.body and step.request.body ~= "" then
 								if #req_lines > 0 then
 									table.insert(req_lines, "")
 								end
-								local body_lines = prettify_json(step.request.body, width)
-								for _, bl in ipairs(body_lines) do
-									table.insert(req_lines, bl)
-								end
+								add_body_lines_scoped(step.request.body, width, req_lines, bid)
 							end
 							table.insert(blocks, {
 								type = "request",
 								title = string.format("Request: %s %s", step.request.method, step.request.url),
 								lines = req_lines,
+								body_id = bid,
 							})
 						end
 					end
 
-					if tab_id == "full" or tab_id == "response" or tab_id == "errors" then
+					if tab_id == "all" or tab_id == "bodies" or tab_id == "failures" then
 						if step.response and step.response.status ~= nil then
 							local res_lines = {}
-							for k, v in pairs(step.response.headers) do
-								table.insert(res_lines, string.format("%s: %s", k, v))
-							end
+							local bid = body_id(sc_idx, sec_idx, st_idx, "response")
+							add_sorted_headers(step.response.headers, res_lines)
+							local size_str = ""
 							if step.response.body and step.response.body ~= "" then
 								if #res_lines > 0 then
 									table.insert(res_lines, "")
 								end
-								local body_lines = prettify_json(step.response.body, width)
-								for _, bl in ipairs(body_lines) do
-									table.insert(res_lines, bl)
-								end
+								size_str = string.format("  ·  %s", approx_bytes(step.response.body))
+								add_body_lines_scoped(step.response.body, width, res_lines, bid)
 							end
 							table.insert(blocks, {
 								type = "response",
-								title = string.format("Response: %s", step.response.status),
+								title = string.format("Response: %s%s", step.response.status, size_str),
 								lines = res_lines,
+								body_id = bid,
 							})
 						end
 					end
 
-					if tab_id == "full" or tab_id == "summary" or tab_id == "errors" then
+					if tab_id == "all" or tab_id == "failures" then
 						-- Assertions
 						if step.assertions and #step.assertions > 0 then
 							local ass_lines = {}
@@ -975,7 +1158,7 @@ function M.render_view(data, tab_id, width)
 	end
 
 	if not rendered_any_steps then
-		if tab_id == "errors" then
+		if tab_id == "failures" then
 			table.insert(lines, "  ✓ All steps passed! No errors to show.")
 		else
 			table.insert(lines, "  No steps found for this view.")
@@ -1164,7 +1347,101 @@ local function focus_step_info(info)
 	end
 end
 
--- Jumps to the next or previous step/section header/scenario header
+local function get_current_step_object()
+	local info = get_current_step_info()
+	if not info or not state or not state.data then
+		return nil
+	end
+	for _, sc in ipairs(state.data.scenarios or {}) do
+		if not info.scenario_title or sc.name == info.scenario_title then
+			for _, sec in ipairs(sc.sections or {}) do
+				for _, step in ipairs(sec.steps or {}) do
+					if step.number == info.step_number then
+						return step, sc
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function yank_step_body()
+	local step = get_current_step_object()
+	if not step then
+		vim.notify("No step under cursor", vim.log.levels.WARN)
+		return
+	end
+	local target_body = nil
+	local label = "Response"
+	if state and state.active_tab == "request" and step.request and step.request.body ~= "" then
+		target_body = step.request.body
+		label = "Request"
+	elseif step.response and step.response.body ~= "" then
+		target_body = step.response.body
+	elseif step.request and step.request.body ~= "" then
+		target_body = step.request.body
+		label = "Request"
+	end
+
+	if not target_body or target_body == "" then
+		vim.notify("No body found for current step", vim.log.levels.WARN)
+		return
+	end
+
+	local clipboard = require("gherkio.core.clipboard")
+	clipboard.set_contents(target_body)
+	vim.notify(string.format("✓ %s body of Step %d copied to clipboard!", label, step.number), vim.log.levels.INFO)
+end
+
+local function inspect_response_in_buffer()
+	local step = get_current_step_object()
+	if not step or not step.response or not step.response.body or step.response.body == "" then
+		vim.notify("No response body available for this step", vim.log.levels.WARN)
+		return
+	end
+
+	local buf = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_buf_set_option(buf, "filetype", "json")
+	vim.api.nvim_buf_set_option(buf, "buftype", "nofile")
+	vim.api.nvim_buf_set_option(buf, "bufhidden", "wipe")
+	vim.api.nvim_buf_set_option(buf, "swapfile", false)
+
+	local body_lines = {}
+	for line in step.response.body:gmatch("[^\r\n]+") do
+		table.insert(body_lines, line)
+	end
+	vim.api.nvim_buf_set_lines(buf, 0, -1, false, body_lines)
+	vim.api.nvim_buf_set_option(buf, "modifiable", false)
+
+	local width = math.min(100, math.floor(vim.o.columns * 0.8))
+	local height = math.min(30, math.floor(vim.o.lines * 0.8))
+	local row = math.floor((vim.o.lines - height) / 2)
+	local col = math.floor((vim.o.columns - width) / 2)
+
+	local win = vim.api.nvim_open_win(buf, true, {
+		relative = "editor",
+		width = width,
+		height = height,
+		row = row,
+		col = col,
+		style = "minimal",
+		border = "rounded",
+		title = string.format(" Step %d Response JSON ", step.number),
+		title_pos = "center",
+	})
+
+	vim.keymap.set("n", "q", function()
+		if vim.api.nvim_win_is_valid(win) then
+			vim.api.nvim_win_close(win, true)
+		end
+	end, { buffer = buf, silent = true })
+	vim.keymap.set("n", "<Esc>", function()
+		if vim.api.nvim_win_is_valid(win) then
+			vim.api.nvim_win_close(win, true)
+		end
+	end, { buffer = buf, silent = true })
+end
 local function jump_step(dir)
 	local win = vim.api.nvim_get_current_win()
 	local cursor = vim.api.nvim_win_get_cursor(win)
@@ -1195,7 +1472,7 @@ local function jump_step(dir)
 end
 
 -- Switch to a different tab and re-render the view
-local function switch_tab(tab_id)
+switch_tab = function(tab_id)
 	if not state or not state.data then
 		return
 	end
@@ -1211,7 +1488,7 @@ local function switch_tab(tab_id)
 		end
 	end
 
-	local lines = M.render_view(state.data, tab_id, current_width)
+	local lines = M.render_view(state.data, tab_id, current_width, state.run_meta)
 	local bufnr = state.bufnr
 	if not vim.api.nvim_buf_is_valid(bufnr) then
 		return
@@ -1245,7 +1522,7 @@ local help_buf = nil
 
 local function close_help()
 	if help_win and vim.api.nvim_win_is_valid(help_win) then
-		vim.api.nvim_win_close(help_win, true)
+		vim.api.nvim_win_close(help_win, false) -- no force: don't cascade-close the results float
 	end
 	help_win = nil
 	help_buf = nil
@@ -1262,21 +1539,25 @@ local function toggle_help()
 		"  ───────────────────────────",
 		"",
 		"  Tabs & Views:",
-		"    1 : Switch to [1] Full View",
-		"    2 : Switch to [2] Summary View",
-		"    3 : Switch to [3] Request View",
-		"    4 : Switch to [4] Response View",
-		"    5 : Switch to [5] Error View",
+		"    1 : Switch to [1] All View",
+		"    2 : Switch to [2] Bodies View",
+		"    3 : Switch to [3] Failures View",
+		"",
+		"  Inspection & Actions:",
+		"    y : Yank clean response/request body to clipboard",
+		"    r : Open response in formatted JSON preview popup",
+		"   <CR>: Expand/collapse body inline",
+		"    Y : Yank visual selection with tree decor stripped",
 		"",
 		"  Navigation:",
 		"    ] : Jump to Next Step/Section",
 		"    [ : Jump to Prev Step/Section",
 		"",
-		"  Controls:",
+	"  Controls:",
 		"    ? : Toggle this help menu",
 		"    o : Open report in browser",
-		"    q : Close results window",
-		"  Esc : Close results window",
+		"    q : Close results window (help closed first)",
+		"  Esc : Dismiss help popup (or close results if help is hidden)",
 	}
 
 	-- Calculate height and width of help popup
@@ -1316,6 +1597,7 @@ local function toggle_help()
 		height = height,
 		style = "minimal",
 		border = "rounded",
+		zindex = 60, -- render above the results float (default zindex 50)
 	})
 
 	-- Set up syntax highlighting for help window
@@ -1334,24 +1616,46 @@ local function toggle_help()
     highlight default link GherkioHelpDivider Comment
   ]])
 
-	-- Close help if parent window or buffer is left
-	vim.api.nvim_create_autocmd({ "BufLeave", "WinLeave", "BufWipeout" }, {
-		buffer = vim.api.nvim_win_get_buf(parent_win),
-		once = true,
-		callback = close_help,
+	-- Close elegantly WITHOUT cascading into the results window:
+	-- never use force=true (it can take nested/parent floats down with it).
+
+	-- Give the help buffer its own focusable window: users can press <Esc> or q
+	-- INSIDE the help window to dismiss it, without killing the results window.
+	local function close_help_from_help_buffer()
+		close_help()
+		-- restore focus to the parent (results) window
+		if vim.api.nvim_win_is_valid(parent_win) then
+			pcall(vim.api.nvim_set_current_win, parent_win)
+		end
+	end
+
+	for _, key in ipairs({ "q", "<Esc>" }) do
+		vim.keymap.set("n", key, close_help_from_help_buffer, {
+			buffer = help_buf,
+			silent = true,
+			nowait = true,
+			desc = "Close Gherkio Help",
+		})
+	end
+	vim.keymap.set("n", "?", close_help_from_help_buffer, {
+		buffer = help_buf,
+		silent = true,
+		nowait = true,
+		desc = "Close Gherkio Help",
 	})
 end
 
 -- ── Viewer ──────────────────────────────────────────────────────────
 -- Opens the Gherkio structured results UI window
-function M.show_results(output_lines)
+function M.show_results(output_lines, run_meta)
 	local data = M.parse_output(output_lines)
 	if not data then
 		vim.notify("Failed to parse Gherkio output.", vim.log.levels.ERROR)
 		return
 	end
 
-	local active_tab = state and state.active_tab or "summary"
+	local active_tab = normalize_tab_id(state and state.active_tab or "all")
+	run_meta = run_meta or (state and state.run_meta)
 
 	local win_cfg = config.get("results_window")
 		or {
@@ -1382,7 +1686,14 @@ function M.show_results(output_lines)
 	end
 
 	-- Update state
-	state = { data = data, active_tab = active_tab, bufnr = bufnr }
+	state = {
+		data = data,
+		active_tab = active_tab,
+		bufnr = bufnr,
+		run_meta = run_meta,
+		-- Preserve per-body expansion across re-renders and runs
+		expanded = (state and state.expanded) or {},
+	}
 
 	-- Find or create window first
 	local win = nil
@@ -1406,6 +1717,9 @@ function M.show_results(output_lines)
 		end
 		vim.api.nvim_win_set_width(win, target_width)
 		vim.api.nvim_win_set_option(win, "wrap", false)
+		if win_cfg.focus_on_open == false then
+			pcall(function() vim.cmd("wincmd p") end)
+		end
 	elseif layout == "split" then
 		if not win then
 			vim.cmd("botright split")
@@ -1418,6 +1732,9 @@ function M.show_results(output_lines)
 		end
 		vim.api.nvim_win_set_height(win, height)
 		target_width = vim.api.nvim_win_get_width(win)
+		if win_cfg.focus_on_open == false then
+			pcall(function() vim.cmd("wincmd p") end)
+		end
 	else -- float
 		local total_cols = vim.o.columns
 		local total_lines = vim.o.lines
@@ -1441,13 +1758,18 @@ function M.show_results(output_lines)
 			height = height,
 			style = "minimal",
 			border = win_cfg.border or "rounded",
-			title = " Gherkio — Full ",
+			title = " Gherkio — All ",
 			title_pos = "center",
 		}
+		local enter = win_cfg.focus_on_open ~= false
 		if win then
 			vim.api.nvim_win_set_config(win, opts)
 		else
-			win = vim.api.nvim_open_win(bufnr, true, opts)
+			win = vim.api.nvim_open_win(bufnr, enter, opts)
+			if not enter then
+				-- Return focus to previous window
+				pcall(function() vim.cmd("wincmd p") end)
+			end
 		end
 	end
 
@@ -1462,7 +1784,7 @@ function M.show_results(output_lines)
 	end
 
 	-- Render the view with the actual window's target width!
-	local lines = M.render_view(data, active_tab, target_width)
+	local lines = M.render_view(data, active_tab, target_width, run_meta)
 
 	-- Set buffer contents
 	vim.api.nvim_buf_set_option(bufnr, "modifiable", true)
@@ -1482,7 +1804,7 @@ function M.show_results(output_lines)
 		end
 	end
 
-	-- Tab switching keys (1 - 5)
+	-- Tab switching keys (1 - 3)
 	for _, t in ipairs(TABS) do
 		vim.keymap.set("n", t.key, function()
 			switch_tab(t.id)
@@ -1496,6 +1818,62 @@ function M.show_results(output_lines)
 	vim.keymap.set("n", "[", function()
 		jump_step("prev")
 	end, { buffer = bufnr, silent = true, desc = "Previous Gherkio Step" })
+
+	-- Action keys
+	-- Visual yank with tree-decoration stripping: select body lines, press Y,
+	-- get clean JSON without `   │`, `├─`, `└─`, or leading connector segments.
+	local function strip_tree_decor(line)
+		local s = line
+		-- Repeatedly strip leading treeline segments: "<spaces>│<spaces>"
+		while true do
+			local stripped = s:match("^%s*│%s*(.*)")
+			if not stripped then break end
+			s = stripped
+		end
+		-- Remove leading block connectors: "<spaces>├─ " or "<spaces>└─ "
+		-- (byte-range class; single-char class mis-handles multibyte UTF-8 in some Lua builds)
+		s = s:match("^%s*.-[├└]─%s*(.*)") or s:gsub("^%s+", "")
+		-- trim trailing whitespace and decoration-induced leading spaces
+		s = s:gsub("%s+$", "")
+		s = s:gsub("^%s+", "")
+		return s
+	end
+
+	local function clean_visual_text(l1, l2)
+		local bufnr = vim.api.nvim_get_current_buf()
+		local cleaned = {}
+		for l = l1, l2 do
+			local line = vim.api.nvim_buf_get_lines(bufnr, l - 1, l, false)[1]
+			if line then
+				local s = strip_tree_decor(line)
+				if s ~= "" then
+					table.insert(cleaned, s)
+				end
+			end
+		end
+		return table.concat(cleaned, "\n")
+	end
+
+	local function visual_yank_clean()
+		local start_pos = vim.fn.getpos("'<")
+		local end_pos = vim.fn.getpos("'>")
+		local l1, l2 = start_pos[2], end_pos[2]
+		local text = clean_visual_text(l1, l2)
+		if text == "" then return end
+		local clipboard = require("gherkio.core.clipboard")
+		clipboard.set_contents(text)
+		vim.notify("✓ Copied clean selection (tree decorations stripped)", vim.log.levels.INFO)
+	end
+
+	vim.keymap.set("v", "Y", visual_yank_clean, { buffer = bufnr, silent = true, desc = "Yank Visual Selection Cleaned of Tree Decor" })
+	vim.keymap.set("n", "y", yank_step_body, { buffer = bufnr, silent = true, desc = "Yank Response/Request Body" })
+	vim.keymap.set("n", "r", inspect_response_in_buffer, { buffer = bufnr, silent = true, desc = "Inspect Response JSON in Popup" })
+	vim.keymap.set(
+		"n",
+		"<CR>",
+		toggle_body_under_cursor,
+		{ buffer = bufnr, silent = true, nowait = true, desc = "Expand/Collapse Body Inline" }
+	)
 
 	-- Help toggle key
 	vim.keymap.set(
@@ -1512,10 +1890,29 @@ function M.show_results(output_lines)
 		end
 	end, { buffer = bufnr, silent = true, desc = "Open Gherkio HTML Report in Browser" })
 
-	vim.keymap.set("n", "q", close, { buffer = bufnr, silent = true, nowait = true })
-	vim.keymap.set("n", "<Esc>", close, { buffer = bufnr, silent = true, nowait = true })
+	-- `q` closes the results window entirely (help dismissed first, if open).
+	vim.keymap.set("n", "q", function()
+		close()
+	end, { buffer = bufnr, silent = true, nowait = true })
+
+	-- <Esc> is reserved to dismiss overlays: closes the help popup when open;
+	-- when no overlay is showing it falls through to closing the results window.
+	vim.keymap.set("n", "<Esc>", function()
+		if help_win and vim.api.nvim_win_is_valid(help_win) then
+			close_help()
+			return
+		end
+		close()
+	end, { buffer = bufnr, silent = true, nowait = true })
 	if layout == "float" then
-		vim.keymap.set("n", "<CR>", close, { buffer = bufnr, silent = true, nowait = true })
+		vim.keymap.set("n", "<CR>", function()
+			-- In float, <CR> conflict: help open? just close help, else toggle body
+			if help_win and vim.api.nvim_win_is_valid(help_win) then
+				close_help()
+				return
+			end
+			toggle_body_under_cursor()
+		end, { buffer = bufnr, silent = true, nowait = true })
 	end
 
 	-- Auto-resize on window resize
@@ -1531,7 +1928,7 @@ function M.show_results(output_lines)
 						if vim.api.nvim_win_is_valid(win_id) then
 							local current_width = vim.api.nvim_win_get_width(win_id)
 							-- Re-render with the new width
-							local lines = M.render_view(state.data, state.active_tab, current_width)
+							local lines = M.render_view(state.data, state.active_tab, current_width, state.run_meta)
 							vim.api.nvim_buf_set_option(state.bufnr, "modifiable", true)
 							vim.api.nvim_buf_set_option(state.bufnr, "readonly", false)
 							vim.api.nvim_buf_set_lines(state.bufnr, 0, -1, false, lines)
@@ -1556,13 +1953,31 @@ function M.show_results(output_lines)
 	})
 end
 
+-- Expose internal test hooks (used by headless verification only)
+function M._debug_state()
+	return state
+end
+
+function M._set_expanded(bid, value)
+	if not state then
+		state = { expanded = {} }
+	end
+	state.expanded = state.expanded or {}
+	state.expanded[bid] = value
+	return bid
+end
+
+function M._expanded(bid)
+	return state and state.expanded and state.expanded[bid] or nil
+end
+
 -- Re-opens the last results window from cached data without re-running the test.
-function M.reopen_results()
+function M.reopen_results(run_meta)
 	if not state or not state.data then
 		vim.notify("No cached Gherkio results available. Run a test first.", vim.log.levels.WARN)
 		return
 	end
-	M.show_results(state.data.raw_lines)
+	M.show_results(state.data.raw_lines, run_meta or state.run_meta)
 end
 
 -- ── Streaming / Loading ────────────────────────────────────────────
@@ -1571,6 +1986,9 @@ end
 
 local streaming_bufnr = nil
 local streaming_win = nil
+-- Smart follow: only auto-scroll to the tail while the cursor is at the bottom.
+local streaming_auto_follow = true
+local streaming_augroup = nil
 
 -- Opens the results window immediately with a loading banner.
 function M.show_streaming(target)
@@ -1664,7 +2082,11 @@ function M.show_streaming(target)
 		if streaming_win and vim.api.nvim_win_is_valid(streaming_win) then
 			vim.api.nvim_win_set_config(streaming_win, opts)
 		else
-			streaming_win = vim.api.nvim_open_win(streaming_bufnr, true, opts)
+			local enter = win_cfg.focus_on_open ~= false
+			streaming_win = vim.api.nvim_open_win(streaming_bufnr, enter, opts)
+			if not enter then
+				pcall(function() vim.cmd("wincmd p") end)
+			end
 		end
 	end
 
@@ -1678,6 +2100,36 @@ function M.show_streaming(target)
 
 	vim.api.nvim_buf_set_option(streaming_bufnr, "modifiable", false)
 	vim.api.nvim_buf_set_option(streaming_bufnr, "readonly", true)
+
+	-- Smart follow: start fresh each run and track whether the user is at the tail.
+	streaming_auto_follow = true
+	if streaming_augroup then
+		pcall(vim.api.nvim_del_augroup_by_id, streaming_augroup)
+		streaming_augroup = nil
+	end
+	if streaming_bufnr and vim.api.nvim_buf_is_valid(streaming_bufnr) then
+		streaming_augroup = vim.api.nvim_create_augroup("GherkioStreamingFollow", { clear = false })
+		vim.api.nvim_create_autocmd("CursorMoved", {
+			group = streaming_augroup,
+			buffer = streaming_bufnr,
+			desc = "Gherkio: detect if user follows the streaming tail",
+			callback = function()
+				vim.schedule(function()
+					if not streaming_win or not vim.api.nvim_win_is_valid(streaming_win) then
+						return
+					end
+					local ok, cursor = pcall(vim.api.nvim_win_get_cursor, streaming_win)
+					if not ok then
+						return
+					end
+					-- Tail is one line above the bottom border.
+					local line_count = vim.api.nvim_buf_line_count(streaming_bufnr)
+					local tail = math.max(1, line_count - 1)
+					streaming_auto_follow = cursor[1] >= tail
+				end)
+			end,
+		})
+	end
 end
 
 -- Appends a single raw output line to the streaming buffer.
@@ -1702,8 +2154,8 @@ function M.append_streaming_line(line)
 			vim.api.nvim_buf_set_option(streaming_bufnr, "modifiable", true)
 			vim.api.nvim_buf_set_option(streaming_bufnr, "readonly", false)
 			vim.api.nvim_buf_set_lines(streaming_bufnr, insert_pos, insert_pos, false, { "    " .. clean })
-			-- Auto-scroll to bottom (always show latest output)
-			if streaming_win and vim.api.nvim_win_is_valid(streaming_win) then
+			-- Smart follow: only scroll to the tail if the user is still following it
+			if streaming_auto_follow and streaming_win and vim.api.nvim_win_is_valid(streaming_win) then
 				local line_count = vim.api.nvim_buf_line_count(streaming_bufnr)
 				-- Scroll to one line above bottom border so border stays visible
 				vim.api.nvim_win_set_cursor(streaming_win, { math.max(1, line_count - 1), 0 })
@@ -1720,11 +2172,17 @@ function M.append_streaming_line(line)
 end
 
 -- Replaces the streaming buffer with the full structured results view.
-function M.finalize_streaming(all_lines)
+function M.finalize_streaming(all_lines, run_meta)
+	-- Clean up the smart-follow cursor tracker
+	if streaming_augroup then
+		pcall(vim.api.nvim_del_augroup_by_id, streaming_augroup)
+		streaming_augroup = nil
+	end
+	streaming_auto_follow = true
 	-- Close streaming window reference so show_results creates a fresh window
 	streaming_bufnr = nil
 	streaming_win = nil
-	M.show_results(all_lines)
+	M.show_results(all_lines, run_meta)
 end
 
 return M

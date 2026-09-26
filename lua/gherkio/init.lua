@@ -139,6 +139,14 @@ M.find_tests = function()
   require("gherkio.core.finder").find_tests()
 end
 
+M.extract_step = function(opts)
+  require("gherkio.core.extract").extract_step(opts)
+end
+
+M.goto_definition = function()
+  require("gherkio.core.navigation").goto_definition()
+end
+
 M.run_under_cursor = function()
   local bufnr = vim.api.nvim_get_current_buf()
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1] - 1
@@ -273,6 +281,12 @@ function M.setup(opts)
         end
         if keys.open_report and keys.open_report ~= "" then
           vim.keymap.set("n", keys.open_report, M.open_report, { buffer = bufnr, silent = true, desc = "Gherkio Open HTML Report" })
+        end
+        if keys.extract_step and keys.extract_step ~= "" then
+          vim.keymap.set({ "n", "v" }, keys.extract_step, M.extract_step, { buffer = bufnr, silent = true, desc = "Gherkio Extract Step to Scenario" })
+        end
+        if keys.goto_definition and keys.goto_definition ~= "" then
+          vim.keymap.set("n", keys.goto_definition, M.goto_definition, { buffer = bufnr, silent = true, desc = "Gherkio Go to Definition" })
         end
       end
     end

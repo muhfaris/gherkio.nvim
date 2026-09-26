@@ -9,15 +9,18 @@ Run test scenarios, convert cURL commands to DSL, view floating command previews
 ## ✨ Features
 
 - ⚡ **Asynchronous Runs**: Execute tests in the background using `vim.system` or `jobstart` without blocking the editor.
-- ✅ **Inline Gutter Signs**: Each step shows `✔` or `✗` in the sign column after a run — results at a glance without switching windows.
+- ✅ **Inline Extmark Status**: Each step shows `✔ 1.2s` or `✗ fail` as inline virtual text after a run — results at a glance without switching windows.
 - 🛠️ **Assertion-Level Quickfix**: Failed assertions jump to the exact assertion line inside the step, not the step header.
-- 📊 **Live Progress Indicator**: See "Executing step 2/5..." in real-time as each step runs.
+- 📊 **Live Streaming Window**: Raw output streams in-place while the run executes, with smart tail-following (pause by scrolling up).
 - 🎯 **Contextual Step Parser**: Understands where your cursor is (Setup, Steps, or Teardown) to execute single steps, active sections, or up to specific step boundaries.
-- 🌐 **Cascading Env & Account Selectors**: Detects `.gherkio/environments/` and credentials config to build interactive options menus using `vim.ui.select` (or custom wrappers like Telescope).
+- 🗂️ **3-Tab Results Window**: `[1] All`, `[2] Bodies`, `[3] Failures` — focused views without overlapping modes.
+- 🔎 **Inline Body Expand/Collapse**: Long bodies clamp with `« N more lines — <CR> to expand inline »`; `<CR>` expands/collapses in place.
+- 🌐 **Auto-Detecting Picker**: Modal menus render through your installed picker (snacks → fzf-lua → telescope), falling back to `vim.ui.select`.
 - 🔑 **Direct Env/Account Switching**: Switch environments (`<leader>ge`) or accounts (`<leader>gk`) without opening the modal.
 - 📋 **cURL Converter**:
   - **Copy to cURL**: Convert any step under your cursor into an executable cURL command, copy it to the clipboard, and display it in a centered, syntax-highlighted floating window.
   - **Paste from cURL**: Automatically convert system or register cURL commands directly into standard Gherkio YAML DSL and paste them at the cursor location.
+- ✂️ **Clean Visual Yank**: Visual-mode `Y` copies selected body lines with all tree decorations (`│`, `├─`, `└─`) stripped — pure JSON to clipboard. Normal-mode `y` copies the current step's body without needing any selection.
 - 🚀 **Zero External Dependencies**: Pure Lua codebase with built-in YAML and buffer parsing. No external rocks required.
 - 🏥 **Checkhealth Diagnostic Integration**: Integrated with `:checkhealth gherkio` to verify binary pathing, project state, and configuration flags.
 
@@ -61,10 +64,16 @@ use {
 
 ```lua
 require("gherkio").setup({
-  -- Interactive modal options picker backend. 
-  -- Set to a function to route to Telescope or fzf-lua, e.g.:
-  -- picker = require("telescope.themes").get_dropdown({}),
-  picker = "vim.ui.select",
+  -- Interactive modal picker backend.
+  -- "auto" probes installed pickers in order: snacks → fzf-lua → telescope → builtin.
+  -- Or force one: "snacks" | "fzf" | "telescope" | "builtin"
+  -- Or provide a custom function: picker = function(items, opts, on_choice) ... end
+  picker = "auto",
+
+  -- Single completion notification (no per-step progress spam)
+  notifications = {
+    enabled = true,
+  },
 
   -- Quickfix list integration behavior
   quickfix = {
@@ -80,12 +89,15 @@ require("gherkio").setup({
     auto_close = true,  -- Close the preview window using `q`, `Esc`, or `Enter`
   },
 
-  -- Floating window results options for test runs
+  -- Results window options for test runs
   results_window = {
-    auto_open = true,   -- Automatically show the test output logs in a floating window
-    width = 0.8,        -- Window width as a ratio of editor columns
-    height = 0.6,       -- Window height as a ratio of editor lines
-    border = "rounded", -- Border style
+    auto_open = true,      -- Automatically show the results window on run
+    layout = "vsplit",     -- "vsplit" | "split" | "float"
+    width = 0.40,          -- Window width as a ratio of editor columns
+    height = 0.3,          -- Window height as a ratio of editor lines (split layout)
+    border = "rounded",    -- Border style
+    max_body_lines = 200,  -- Body lines rendered before an inline <CR> expand marker
+    focus_on_open = false, -- Keep cursor in the test buffer when the results window opens
   },
 
   -- Custom mappings registered inside Gherkio test buffers
@@ -144,6 +156,20 @@ The plugin exposes the `:Gherkio` user command, which includes tab autocomplete 
 
 All keymaps are configurable via `config.keys`.
 
+### Results Window Keymaps (buffer-local inside the results window)
+
+| Key | Action |
+| :--- | :--- |
+| `1` | Switch to `[1] All` view (full tree) |
+| `2` | Switch to `[2] Bodies` view (request/response blocks only) |
+| `3` | Switch to `[3] Failures` view (failed steps only) |
+| `<CR>` | Expand/collapse the body block under the cursor inline |
+| `y` | Yank current step's body (response first, then request) to clipboard |
+| `r` | Open response body in a formatted JSON preview popup |
+| `Y` (visual mode) | Yank visual selection with tree decorations (`│`, `├─`, `└─`) stripped |
+| `?` | Show the help popup |
+| `q` or `<Esc>` | `q` closes the results window (help closed first); `<Esc>` dismisses the help popup, or closes the results window if help is already hidden |
+
 ### 🔍 Dry Run Preview
 
 Append `--dry-run` to any run command to preview the execution step-by-step **without making live HTTP requests**:
@@ -151,15 +177,29 @@ Append `--dry-run` to any run command to preview the execution step-by-step **wi
 :Gherkio run all --dry-run
 ```
 
-All runs always capture full request/response data. In the results window, the `── Request ──` and `── Response ──` sections are **folded by default** — press `zo` on a step to expand its details.
+All runs always capture full request/response data. Long bodies are clamped with an inline `« N more lines — <CR> to expand inline »` marker — press `<CR>` on (or inside) the block to expand it; press `<CR>` again to collapse it.
 
-### Gutter Signs
+### Inline Step Status
 
-After every run, each step's `- request:` line shows:
-- `✔` — step passed all assertions
-- `✗` — step failed one or more assertions
+After every run, each step line shows inline virtual text (extmarks, not legacy signs):
+- `✔ <duration>` — step passed all assertions (e.g. `✔ 1.2s`)
+- `✗ fail` — step failed one or more assertions
 
-Signs clear automatically before the next run.
+Marks clear automatically before the next run.
+
+### Copy & Paste Flows
+
+**Plain `y` (Normal mode, results window):** copies the parsed clean body (no decoration). Prefers the response body; falls back to the request body when there is no response.
+
+**Visual `Y` (results window):** for request bodies or custom selections:
+1. `V` (or `v`) — select the exact body lines
+2. `Y` — copies selection with all treeline chars (`│`, `├─`, `└─`) and decoration indent stripped
+
+Both write to the `+` system clipboard and `"` unnamed register. Use `<leader>gc` / `<leader>gp` to convert to/from cURL.
+
+### Notifications
+
+A single notification fires when the run completes (`✓ passed` / `✗ failed — check quickfix`). Per-step progress notifications were removed — the streaming window already shows progress in place. Set `notifications.enabled = false` to disable.
 
 ---
 
