@@ -68,6 +68,11 @@ local function route_command(opts)
     return
   end
 
+  if sub == "outline" then
+    gherkio.open_outline()
+    return
+  end
+
   if sub == "run" then
     local parser = require("gherkio.core.parser")
     local bufnr = vim.api.nvim_get_current_buf()
@@ -132,7 +137,7 @@ vim.api.nvim_create_user_command("Gherkio", route_command, {
   nargs = "*",
   range = true,
   complete = function(arg_lead, cmd_line, cursor_pos)
-    local subcmds = { "run", "find", "extract", "def", "preview", "copy", "paste", "stop", "health", "results", "report" }
+    local subcmds = { "run", "find", "extract", "def", "outline", "preview", "copy", "paste", "stop", "health", "results", "report" }
     local args = vim.split(cmd_line, "%s+")
     
     -- Completing sub-command

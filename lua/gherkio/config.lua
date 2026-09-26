@@ -15,6 +15,7 @@ M.defaults = {
 		open_report = "<leader>go",
 		extract_step = "<leader>gx",
 		goto_definition = "gd",
+		open_outline = "<leader>gO",
 	},
 	picker = "auto", -- "auto" | "snacks" | "fzf" | "telescope" | "builtin" | custom function(items, opts, on_choice)
 	quickfix = {

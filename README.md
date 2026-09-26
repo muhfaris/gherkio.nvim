@@ -14,6 +14,7 @@ Run test scenarios, convert cURL commands to DSL, view floating command previews
 - 📊 **Live Streaming Window**: Raw output streams in-place while the run executes, with smart tail-following (pause by scrolling up).
 - 🎯 **Contextual Step Parser**: Understands where your cursor is (Setup, Steps, or Teardown) to execute single steps, active sections, or up to specific step boundaries.
 - 🗂️ **3-Tab Results Window**: `[1] All`, `[2] Bodies`, `[3] Failures` — focused views without overlapping modes.
+- 🗺️ **Static Outline View (Review Without Running)**: `<leader>gO` / `:Gherkio outline` renders the whole scenario from the YAML buffer — sections, steps, assertion one-liners, `save:` vars, `[use:]` shared refs — with a totals footer. `<CR>` on any step jumps to its line in the YAML source. No run required.
 - 🔎 **Inline Body Expand/Collapse**: Long bodies clamp with `« N more lines — <CR> to expand inline »`; `<CR>` expands/collapses in place.
 - 🌐 **Auto-Detecting Picker**: Modal menus render through your installed picker (snacks → fzf-lua → telescope), falling back to `vim.ui.select`.
 - 🔑 **Direct Env/Account Switching**: Switch environments (`<leader>ge`) or accounts (`<leader>gk`) without opening the modal.
@@ -113,6 +114,7 @@ require("gherkio").setup({
     switch_env        = "<leader>ge", -- Switch active environment
     switch_account    = "<leader>gk", -- Switch active account
     open_report       = "<leader>go", -- Open latest HTML report in default web browser
+    open_outline      = "<leader>gO", -- Static outline view: review the scenario without running it
   }
 })
 ```
@@ -136,6 +138,7 @@ The plugin exposes the `:Gherkio` user command, which includes tab autocomplete 
 | `:Gherkio stop` | Cancel any active background Gherkio execution job. |
 | `:Gherkio health` | Verify plugin dependencies and path validations using `:checkhealth gherkio`. |
 | `:Gherkio results` | Reopen the results window of the last run. |
+| `:Gherkio outline` | Open static outline view of current scenario file (review without running). |
 | `:Gherkio report` | Open the latest HTML report in your default browser. |
 
 ### Keymaps (buffer-local to YAML files, except `find_tests` which is global)
@@ -152,6 +155,7 @@ The plugin exposes the `:Gherkio` user command, which includes tab autocomplete 
 | `<leader>gp` | Paste cURL from clipboard as DSL |
 | `<leader>gi` | Preview current step as cURL in floating window |
 | `<leader>gl` | Repeat the last test run |
+| `<leader>gO` | Open static outline view (review scenario without running) |
 | `<leader>go` | Open the latest HTML report in your default browser |
 
 All keymaps are configurable via `config.keys`.
